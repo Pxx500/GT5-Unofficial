@@ -20,8 +20,8 @@ public final class IFNNormalHeatPumpPlanner {
         long amountQ = request.inputBatch.amountQ();
         double inputSpecificEnthalpy = request.inputBatch.specificEnthalpy();
         double inputTemperature = request.inputBatch.temperature();
-        if (inputTemperature <= 0.0d) {
-            inputTemperature = request.coldReservoirTemperature;
+        if (!Double.isFinite(inputTemperature) || inputTemperature <= 0.0d) {
+            return Plan.invalid();
         }
 
         double outputTemperature = inputTemperature;
@@ -44,51 +44,47 @@ public final class IFNNormalHeatPumpPlanner {
                     energyCost = 0L;
                     metrics = zeroMetrics();
                 } else {
-                    metrics = IFNMachineThermo.computeHeatPumpMetrics(inputTemperature, outputTemperature);
+                    metrics = IFNMachineThermo.computeReservoirHeatPumpMetrics(
+                        inputTemperature,
+                        outputTemperature,
+                        request.reservoirTemperature,
+                        heatingDirection);
                     outputSpecificEnthalpy = IFNMachineThermo.computeTargetSpecificEnthalpyForStateAdd(
                         request.outputNetwork,
                         request.fluid,
                         outputTemperature,
-                        amountQ
-                    );
+                        amountQ);
                     energyCost = IFNMachineThermo.computeHeatPumpEnergyCost(
                         inputSpecificEnthalpy,
                         outputSpecificEnthalpy,
                         amountQ,
                         metrics.cop(),
-                        metrics.efficiencyPenalty()
-                    );
+                        metrics.efficiencyPenalty());
                     targetOutputState = true;
                 }
                 break;
             case TARGET_COP:
-                outputTemperature = IFNMachineThermo.computeTargetCopOutputTemperature(
-                    inputTemperature,
+                outputTemperature = IFNMachineThermo.computeReservoirTargetCopOutputTemperature(
+                    request.reservoirTemperature,
                     request.targetCOP,
-                    request.targetHeating
-                );
+                    request.targetHeating);
                 heatingDirection = request.targetHeating;
-                double temperatureDelta = outputTemperature - inputTemperature;
-                float penalty = FluidThermalProperties.calculateTemperaturePenalty((float) Math.abs(temperatureDelta));
-                metrics = IFNMachineThermo.heatPumpMetrics(
-                    request.targetCOP,
-                    penalty,
-                    Math.abs(temperatureDelta),
-                    request.targetCOP / penalty
-                );
+                metrics = IFNMachineThermo.computeReservoirHeatPumpMetrics(
+                    inputTemperature,
+                    outputTemperature,
+                    request.reservoirTemperature,
+                    heatingDirection);
                 outputSpecificEnthalpy = IFNMachineThermo.computeTargetSpecificEnthalpyForStateAdd(
                     request.outputNetwork,
                     request.fluid,
                     outputTemperature,
-                    amountQ
-                );
+                    amountQ);
                 energyCost = IFNMachineThermo.computeHeatPumpEnergyCost(
                     inputSpecificEnthalpy,
                     outputSpecificEnthalpy,
                     amountQ,
                     metrics.cop(),
-                    metrics.efficiencyPenalty()
-                );
+                    metrics.efficiencyPenalty());
                 targetOutputState = true;
                 break;
             case TARGET_ENERGY:
@@ -96,15 +92,16 @@ public final class IFNNormalHeatPumpPlanner {
                 if (targetTotalEnergy <= 0L) {
                     return Plan.invalid();
                 }
-                IFNMachineThermo.TargetEnergyState targetEnergyState = IFNMachineThermo.computeTargetEnergyOutputState(
-                    request.fluid,
-                    request.outputNetwork.getPressure(),
-                    inputTemperature,
-                    inputSpecificEnthalpy,
-                    amountQ,
-                    targetTotalEnergy,
-                    request.targetHeating
-                );
+                IFNMachineThermo.TargetEnergyState targetEnergyState = IFNMachineThermo
+                    .computeReservoirTargetEnergyOutputState(
+                        request.outputNetwork,
+                        request.fluid,
+                        inputTemperature,
+                        inputSpecificEnthalpy,
+                        amountQ,
+                        targetTotalEnergy,
+                        request.reservoirTemperature,
+                        request.targetHeating);
                 outputSpecificEnthalpy = targetEnergyState.specificEnthalpy();
                 outputTemperature = targetEnergyState.temperature();
                 heatingDirection = request.targetHeating;
@@ -131,15 +128,12 @@ public final class IFNNormalHeatPumpPlanner {
             energyCost,
             metrics,
             passthroughMode,
-            targetOutputState
-        );
+            targetOutputState);
     }
 
     private static IFNMachineThermo.HeatPumpMetrics zeroMetrics() {
         return IFNMachineThermo.heatPumpMetrics(0.0f, 1.0f, 0.0d, 0.0f);
     }
-
-
 
     public static final class Request {
 
@@ -153,12 +147,12 @@ public final class IFNNormalHeatPumpPlanner {
         private final int targetEnergyPerTick;
         private final float lowerTemperatureTolerance;
         private final float upperTemperatureTolerance;
-        private final float coldReservoirTemperature;
+        private final float reservoirTemperature;
 
         private Request(IFNHeatPumpMode mode, IntegratedFluidNetwork outputNetwork, Fluid fluid,
-            IFNMachineBatchPlanner.BatchPlan inputBatch, boolean targetHeating, float targetTemperature, float targetCOP,
-            int targetEnergyPerTick, float lowerTemperatureTolerance, float upperTemperatureTolerance,
-            float coldReservoirTemperature) {
+            IFNMachineBatchPlanner.BatchPlan inputBatch, boolean targetHeating, float targetTemperature,
+            float targetCOP, int targetEnergyPerTick, float lowerTemperatureTolerance, float upperTemperatureTolerance,
+            float reservoirTemperature) {
             this.mode = mode;
             this.outputNetwork = outputNetwork;
             this.fluid = fluid;
@@ -169,13 +163,13 @@ public final class IFNNormalHeatPumpPlanner {
             this.targetEnergyPerTick = targetEnergyPerTick;
             this.lowerTemperatureTolerance = lowerTemperatureTolerance;
             this.upperTemperatureTolerance = upperTemperatureTolerance;
-            this.coldReservoirTemperature = coldReservoirTemperature;
+            this.reservoirTemperature = reservoirTemperature;
         }
 
         public static Request of(IFNHeatPumpMode mode, IntegratedFluidNetwork outputNetwork, Fluid fluid,
-            IFNMachineBatchPlanner.BatchPlan inputBatch, boolean targetHeating, float targetTemperature, float targetCOP,
-            int targetEnergyPerTick, float lowerTemperatureTolerance, float upperTemperatureTolerance,
-            float coldReservoirTemperature) {
+            IFNMachineBatchPlanner.BatchPlan inputBatch, boolean targetHeating, float targetTemperature,
+            float targetCOP, int targetEnergyPerTick, float lowerTemperatureTolerance, float upperTemperatureTolerance,
+            float reservoirTemperature) {
             return new Request(
                 mode,
                 outputNetwork,
@@ -187,20 +181,21 @@ public final class IFNNormalHeatPumpPlanner {
                 targetEnergyPerTick,
                 lowerTemperatureTolerance,
                 upperTemperatureTolerance,
-                coldReservoirTemperature
-            );
+                reservoirTemperature);
         }
 
         private boolean isValid() {
-            return mode != null
-                && outputNetwork != null
+            return mode != null && outputNetwork != null
                 && fluid != null
                 && inputBatch != null
                 && inputBatch.isValid()
                 && lowerTemperatureTolerance >= 0.0f
                 && upperTemperatureTolerance >= 0.0f
-                && coldReservoirTemperature > 0.0f
-                && (mode != IFNHeatPumpMode.TARGET_COP || targetCOP >= 1.1f)
+                && Float.isFinite(reservoirTemperature)
+                && reservoirTemperature > 0.0f
+                && (mode != IFNHeatPumpMode.TARGET_TEMPERATURE
+                    || (Float.isFinite(targetTemperature) && targetTemperature > 0.0f))
+                && (mode != IFNHeatPumpMode.TARGET_COP || (Float.isFinite(targetCOP) && targetCOP >= 1.1f))
                 && (mode != IFNHeatPumpMode.TARGET_ENERGY || targetEnergyPerTick > 0);
         }
     }
@@ -216,8 +211,8 @@ public final class IFNNormalHeatPumpPlanner {
         private final boolean passthrough;
         private final boolean targetOutputState;
 
-        private Plan(IFNHeatPumpPlanStatus status, long amountQ, double outputSpecificEnthalpy, double outputTemperature,
-            long energyCostEu, IFNMachineThermo.HeatPumpMetrics metrics, boolean passthrough,
+        private Plan(IFNHeatPumpPlanStatus status, long amountQ, double outputSpecificEnthalpy,
+            double outputTemperature, long energyCostEu, IFNMachineThermo.HeatPumpMetrics metrics, boolean passthrough,
             boolean targetOutputState) {
             this.status = status;
             this.amountQ = amountQ;
@@ -238,8 +233,7 @@ public final class IFNNormalHeatPumpPlanner {
                 0L,
                 zeroMetrics(),
                 false,
-                false
-            );
+                false);
         }
 
         public IFNHeatPumpPlanStatus getStatus() {

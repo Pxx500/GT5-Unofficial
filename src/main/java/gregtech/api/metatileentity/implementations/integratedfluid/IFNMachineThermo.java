@@ -10,6 +10,8 @@ import net.minecraftforge.fluids.Fluid;
  */
 public final class IFNMachineThermo {
 
+    private static final int ENERGY_BUDGET_SEARCH_ITERATIONS = 32;
+
     private IFNMachineThermo() {}
 
     public static double computeTargetSpecificEnthalpyForStateAdd(IntegratedFluidNetwork network, Fluid fluid,
@@ -24,20 +26,18 @@ public final class IFNMachineThermo {
         }
 
         float pressureGuess = IFNPressurePolicy.clampMinimum(network.getPressure());
-        double specificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(fluid, pressureGuess, targetTemperature);
+        double specificEnthalpy = FluidThermalProperties
+            .getSpecificEnthalpyFromPT(fluid, pressureGuess, targetTemperature);
 
         for (int pass = 0; pass < IFNPressurePolicy.TARGET_ENTHALPY_CORRECTION_PASSES; pass++) {
-            long enthalpyQ = toEnthalpyQ(specificEnthalpy, addAmountQ);
+            long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(specificEnthalpy, addAmountQ);
             float predictedPressure = network.predictPressureAfterStateAdd(fluid, addAmountQ, enthalpyQ);
             if (Float.isNaN(predictedPressure) || Float.isInfinite(predictedPressure) || predictedPressure <= 0.0f) {
                 return specificEnthalpy;
             }
 
-            double correctedSpecificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(
-                fluid,
-                predictedPressure,
-                targetTemperature
-            );
+            double correctedSpecificEnthalpy = FluidThermalProperties
+                .getSpecificEnthalpyFromPT(fluid, predictedPressure, targetTemperature);
             if (Math.abs(correctedSpecificEnthalpy - specificEnthalpy) < 1.0e-6d) {
                 return correctedSpecificEnthalpy;
             }
@@ -81,10 +81,62 @@ public final class IFNMachineThermo {
         return new HeatPumpMetrics(cop, efficiencyPenalty, temperatureDelta, effectiveCop);
     }
 
+    public static HeatPumpMetrics computeReservoirHeatPumpMetrics(double inputTemperature, double outputTemperature,
+        double reservoirTemperature, boolean heating) {
+        // Charge against the largest reservoir lift reached by the processed fluid.
+        double fluidTemperature = heating ? Math.max(inputTemperature, outputTemperature)
+            : Math.min(inputTemperature, outputTemperature);
+        double lift = heating ? fluidTemperature - reservoirTemperature : reservoirTemperature - fluidTemperature;
+        double carnotCop = lift > 0.0d ? fluidTemperature / lift : FluidThermalProperties.MAX_HEAT_PUMP_COP;
+        float cop = (float) Math.min(FluidThermalProperties.MAX_HEAT_PUMP_COP, carnotCop);
+        float penalty = FluidThermalProperties.calculateTemperaturePenalty((float) Math.max(0.0d, lift));
+        return new HeatPumpMetrics(cop, penalty, Math.abs(outputTemperature - inputTemperature), cop / penalty);
+    }
+
+    public static double computeReservoirTargetCopOutputTemperature(double reservoirTemperature, float targetCop,
+        boolean heating) {
+        return reservoirTemperature * targetCop / (heating ? targetCop - 1.0d : targetCop + 1.0d);
+    }
+
+    public static TargetEnergyState computeReservoirTargetEnergyOutputState(IntegratedFluidNetwork outputNetwork,
+        Fluid fluid, double inputTemperature, double inputSpecificEnthalpy, long amountQ, long energyBudget,
+        double reservoirTemperature, boolean heating) {
+        double amount = amountQ / (double) IntegratedFluidNetwork.AMOUNT_SCALE;
+        double lowHeat = 0.0d;
+        double highHeat = energyBudget * (double) FluidThermalProperties.MAX_HEAT_PUMP_COP;
+        TargetEnergyState best = new TargetEnergyState(
+            inputSpecificEnthalpy,
+            inputTemperature,
+            computeReservoirHeatPumpMetrics(inputTemperature, inputTemperature, reservoirTemperature, heating));
+
+        // Search transported enthalpy, not temperature, so latent heat stays inside the same budget.
+        for (int iteration = 0; iteration < ENERGY_BUDGET_SEARCH_ITERATIONS; iteration++) {
+            double heat = lowHeat + (highHeat - lowHeat) / 2.0d;
+            long enthalpyQ = IntegratedFluidNetwork
+                .toEnthalpyQFromSpecific(inputSpecificEnthalpy + (heating ? heat : -heat) / amount, amountQ);
+            double specificEnthalpy = IntegratedFluidNetwork.toSpecificEnthalpy(enthalpyQ, amountQ);
+            double pressure = outputNetwork.predictPressureAfterStateAdd(fluid, amountQ, enthalpyQ);
+            double temperature = FluidThermalProperties.getTemperatureFromPH(fluid, pressure, specificEnthalpy);
+            HeatPumpMetrics metrics = computeReservoirHeatPumpMetrics(
+                inputTemperature,
+                temperature,
+                reservoirTemperature,
+                heating);
+            double movedHeat = Math.abs(specificEnthalpy - inputSpecificEnthalpy) * amount;
+            double cost = movedHeat / metrics.effectiveCop();
+            if (Double.isFinite(temperature) && temperature > 0.0d && Double.isFinite(cost) && cost <= energyBudget) {
+                lowHeat = heat;
+                best = new TargetEnergyState(specificEnthalpy, temperature, metrics);
+            } else {
+                highHeat = heat;
+            }
+        }
+        return best;
+    }
+
     public static double computeTargetCopOutputTemperature(double inputTemperature, float targetCop, boolean heating) {
         float effectiveCop = targetCop <= 1.0f ? 1.1f : targetCop;
-        double outputTemperature = heating
-            ? (effectiveCop * inputTemperature) / (effectiveCop - 1.0f)
+        double outputTemperature = heating ? (effectiveCop * inputTemperature) / (effectiveCop - 1.0f)
             : inputTemperature * (effectiveCop - 1.0f) / effectiveCop;
         double delta = Math.abs(outputTemperature - inputTemperature);
         if (delta < 0.1d) {
@@ -97,8 +149,7 @@ public final class IFNMachineThermo {
         double blueInputTemperature, float targetCop, boolean configureRed) {
         float effectiveCop = targetCop <= 1.0f ? 1.1f : targetCop;
         double targetInputTemperature = configureRed ? redInputTemperature : blueInputTemperature;
-        double outputTemperature = configureRed
-            ? (effectiveCop * blueInputTemperature) / (effectiveCop - 1.0f)
+        double outputTemperature = configureRed ? (effectiveCop * blueInputTemperature) / (effectiveCop - 1.0f)
             : redInputTemperature * (effectiveCop - 1.0f) / effectiveCop;
         double delta = Math.abs(outputTemperature - targetInputTemperature);
         if (delta < 0.1d) {
@@ -126,8 +177,7 @@ public final class IFNMachineThermo {
             blueInputTemperature,
             configureRed,
             targetInputTemperature,
-            targetInputTemperature
-        );
+            targetInputTemperature);
         if (fluid == null || amountQ <= 0L || targetTotalEnergy <= 0L) {
             return new TargetEnergyState(targetInputSpecificEnthalpy, targetInputTemperature, metrics);
         }
@@ -143,11 +193,10 @@ public final class IFNMachineThermo {
                 blueInputTemperature,
                 configureRed,
                 targetInputTemperature,
-                tempEstimate
-            );
+                tempEstimate);
             double transferredHeat = metrics.effectiveCop() * targetTotalEnergy;
-            outputSpecificEnthalpy = targetInputSpecificEnthalpy + (heating ? transferredHeat : -transferredHeat)
-                / amount;
+            outputSpecificEnthalpy = targetInputSpecificEnthalpy
+                + (heating ? transferredHeat : -transferredHeat) / amount;
             tempEstimate = FluidThermalProperties.getTemperatureFromPH(fluid, outputPressure, outputSpecificEnthalpy);
 
             if (Double.isNaN(tempEstimate) || Double.isInfinite(tempEstimate)) {
@@ -164,8 +213,7 @@ public final class IFNMachineThermo {
             blueInputTemperature,
             configureRed,
             targetInputTemperature,
-            tempEstimate
-        );
+            tempEstimate);
         return new TargetEnergyState(outputSpecificEnthalpy, tempEstimate, metrics);
     }
 
@@ -198,15 +246,6 @@ public final class IFNMachineThermo {
         }
 
         return new TargetEnergyState(outputSpecificEnthalpy, tempEstimate, metrics);
-    }
-
-    private static long toEnthalpyQ(double energyEu) {
-        return (long) Math.round(energyEu * IntegratedFluidNetwork.ENTHALPY_SCALE);
-    }
-
-    private static long toEnthalpyQ(double specificEnthalpy, long amountQ) {
-        double amount = (double) amountQ / (double) IntegratedFluidNetwork.AMOUNT_SCALE;
-        return toEnthalpyQ(specificEnthalpy * amount);
     }
 
     public static final class HeatPumpMetrics {

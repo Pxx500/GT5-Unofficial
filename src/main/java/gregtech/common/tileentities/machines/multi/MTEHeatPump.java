@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.Fluid;
 
@@ -51,15 +50,15 @@ import gregtech.api.util.MultiblockTooltipBuilder;
 import gregtech.common.blocks.BlockCasings2;
 import gregtech.common.gui.modularui.multiblock.MTEHeatPumpGui;
 import gregtech.common.gui.modularui.multiblock.base.MTEMultiBlockBaseGui;
-import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpOutputBufferDrain;
 import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpMachineProcessState;
+import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpOutputBufferDrain;
 import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpOutputPorts;
 
 public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implements ISurvivalConstructable {
 
     private static final String STRUCTURE_PIECE_MAIN = "main";
     private static final int MAX_FLUID_PER_OPERATION = 1000; // Maximum fluid amount per operation (in mB)
-    private static final float COLD_RESERVOIR_TEMPERATURE = 300.0f; // Ambient temperature for COP calculation
+    private static final float AMBIENT_RESERVOIR_TEMPERATURE = 300.0f;
     private static final float DEFAULT_TARGET_TEMPERATURE = 310.0f; // Default target output temperature (310K)
     private static final float DEFAULT_TARGET_COP = 5.0f; // Default COP target
     private static final int DEFAULT_TARGET_ENERGY_PER_TICK = 100; // Default 100 EU/t
@@ -80,19 +79,22 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     private boolean cachedHatchValidation = false;
     private long lastValidationCheck = 0L;
 
-    private float targetTemperature = DEFAULT_TARGET_TEMPERATURE; // For TARGET_TEMPERATURE mode (absolute temperature in K)
+    private float targetTemperature = DEFAULT_TARGET_TEMPERATURE; // For TARGET_TEMPERATURE mode (absolute temperature
+                                                                  // in K)
     private float targetCOP = DEFAULT_TARGET_COP; // For TARGET_COP mode
     private int targetEnergyPerTick = DEFAULT_TARGET_ENERGY_PER_TICK; // For TARGET_ENERGY mode (EU per tick)
     private int fluidAmountPerOperation = MAX_FLUID_PER_OPERATION; // Amount of fluid to process per operation (in mB)
-    private float lowerTemperatureTolerance = 0.5f; // Lower temperature tolerance for passthrough (heating threshold in K)
-    private float upperTemperatureTolerance = 0.5f; // Upper temperature tolerance for passthrough (cooling threshold in K)
+    private float lowerTemperatureTolerance = 0.5f; // Lower temperature tolerance for passthrough (heating threshold in
+                                                    // K)
+    private float upperTemperatureTolerance = 0.5f; // Upper temperature tolerance for passthrough (cooling threshold in
+                                                    // K)
 
     // Current calculated values for GUI display
     private float currentCOP = 0.0f;
     private float currentOutputTemperature = 0.0f;
     private long currentEnergyUsage = 0L;
-    private float currentTemperatureDelta = 0.0f;  // NEW: for efficiency warnings
-    private float currentEfficiencyPenalty = 1.0f;  // NEW: shows if penalty is applied
+    private float currentTemperatureDelta = 0.0f; // NEW: for efficiency warnings
+    private float currentEfficiencyPenalty = 1.0f; // NEW: shows if penalty is applied
     private float effectiveCOP = 0.0f; // Real COP including penalty (currentCOP / penalty)
     private int totalEnergyCost = 0; // Total energy cost per tick including penalty for GUI
 
@@ -102,35 +104,25 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         .<MTEHeatPump>builder()
         .addShape(
             STRUCTURE_PIECE_MAIN,
-            transpose(
-                new String[][] {
-                    { "CCC", "CCC", "CCC" },
-                    { "C~C", "CCC", "CCC" },
-                    { "CCC", "CCC", "CCC" }
-                }))
+            transpose(new String[][] { { "CCC", "CCC", "CCC" }, { "C~C", "CCC", "CCC" }, { "CCC", "CCC", "CCC" } }))
         .addElement(
             'C',
             ofChain(
                 // FIRST: Let buildHatchAdder capture Energy and Maintenance hatches
-                buildHatchAdder(MTEHeatPump.class)
-                    .atLeast(Energy, Maintenance)
+                buildHatchAdder(MTEHeatPump.class).atLeast(Energy, Maintenance)
                     .casingIndex(((BlockCasings2) GregTechAPI.sBlockCasings2).getTextureIndex(0))
                     .hint(1)
                     .buildAndChain(
-                        onElementPass(
-                            x -> ++((MTEHeatPump) x).mCasingAmount,
-                            ofBlock(GregTechAPI.sBlockCasings2, 0)
-                        )
-                    ),
+                        onElementPass(x -> ++((MTEHeatPump) x).mCasingAmount, ofBlock(GregTechAPI.sBlockCasings2, 0))),
                 // THEN: Accept any remaining GregTech machines (like Integrated Fluid Hatches)
                 ofHatchAdder(
-                    MTEHeatPump::addIntegratedInputHatch, ((BlockCasings2) GregTechAPI.sBlockCasings2).getTextureIndex(0), 1
-                ),
+                    MTEHeatPump::addIntegratedInputHatch,
+                    ((BlockCasings2) GregTechAPI.sBlockCasings2).getTextureIndex(0),
+                    1),
                 ofHatchAdder(
-                    MTEHeatPump::addIntegratedOutputHatch, ((BlockCasings2) GregTechAPI.sBlockCasings2).getTextureIndex(0), 1
-                )
-            )
-        )
+                    MTEHeatPump::addIntegratedOutputHatch,
+                    ((BlockCasings2) GregTechAPI.sBlockCasings2).getTextureIndex(0),
+                    1)))
         .build();
 
     private int mCasingAmount;
@@ -185,19 +177,14 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         int colorIndex, boolean active, boolean redstoneLevel) {
         if (side == facing) {
             if (active) {
-                return new ITexture[] {
-                    TextureFactory.of(GregTechAPI.sBlockCasings2, 0),
-                    TextureFactory.of(Textures.BlockIcons.OVERLAY_FRONT_MULTI_SMELTER_ACTIVE)
-                };
+                return new ITexture[] { TextureFactory.of(GregTechAPI.sBlockCasings2, 0),
+                    TextureFactory.of(Textures.BlockIcons.OVERLAY_FRONT_MULTI_SMELTER_ACTIVE) };
             }
-            return new ITexture[] {
-                TextureFactory.of(GregTechAPI.sBlockCasings2, 0),
-                TextureFactory.of(Textures.BlockIcons.OVERLAY_FRONT_MULTI_SMELTER)
-            };
+            return new ITexture[] { TextureFactory.of(GregTechAPI.sBlockCasings2, 0),
+                TextureFactory.of(Textures.BlockIcons.OVERLAY_FRONT_MULTI_SMELTER) };
         }
         return new ITexture[] { TextureFactory.of(GregTechAPI.sBlockCasings2, 0) };
     }
-
 
     @Override
     public boolean checkMachine(IGregTechTileEntity aBaseMetaTileEntity, ItemStack aStack) {
@@ -205,8 +192,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         mIntegratedInputHatches.clear();
         mIntegratedOutputHatches.clear();
 
-        return checkPiece(STRUCTURE_PIECE_MAIN, 1, 1, 0)
-            && mCasingAmount >= 18
+        return checkPiece(STRUCTURE_PIECE_MAIN, 1, 1, 0) && mCasingAmount >= 18
             && !mIntegratedInputHatches.isEmpty()
             && !mIntegratedOutputHatches.isEmpty()
             && !mEnergyHatches.isEmpty()
@@ -215,6 +201,13 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
 
     @Override
     public @NotNull CheckRecipeResult checkProcessing() {
+        // Output is prepared at recipe start, but stays reserved until all work is paid.
+        if (machineProcessState.hasUnfinishedWork()) {
+            mMaxProgresstime = machineProcessState.remainingWorkTicks();
+            mEUt = -machineProcessState.workEuPerTick();
+            mEfficiency = getMaxEfficiency(null);
+            return CheckRecipeResultRegistry.SUCCESSFUL;
+        }
         CheckRecipeResult pendingOutputResult = pushPendingOutputsForCurrentMode();
         if (pendingOutputResult != CheckRecipeResultRegistry.SUCCESSFUL) {
             return pendingOutputResult;
@@ -229,8 +222,18 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         }
     }
 
+    @Override
+    public boolean onRunningTick(ItemStack stack) {
+        if (!super.onRunningTick(stack)) {
+            return false;
+        }
+        machineProcessState.recordPoweredTick();
+        return true;
+    }
+
     private CheckRecipeResult pushPendingOutputsForCurrentMode() {
-        if (!machineProcessState.outputBuffer().hasPendingOutput()) {
+        if (!machineProcessState.outputBuffer()
+            .hasPendingOutput()) {
             return CheckRecipeResultRegistry.SUCCESSFUL;
         }
 
@@ -289,26 +292,25 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return networkStatus;
         }
 
-        IFNMachineBatchPlanner.NetworkInputBatchPlan inputBatch = IFNMachineBatchPlanner.planNetworkInputBatch(
-            context.inputNetwork,
-            fluidAmountPerOperation
-        );
+        IFNMachineBatchPlanner.NetworkInputBatchPlan inputBatch = IFNMachineBatchPlanner
+            .planNetworkInputBatch(context.inputNetwork, fluidAmountPerOperation);
         if (!inputBatch.isValid()) return CheckRecipeResultRegistry.NO_RECIPE;
         Fluid inputFluid = inputBatch.fluid();
 
-        IFNSplitHeatPumpPlanner.Plan plan = IFNSplitHeatPumpPlanner.plan(IFNSplitHeatPumpPlanner.Request.of(
-            operatingMode.toIFNMode(),
-            context.redOutputNetwork,
-            inputFluid,
-            inputBatch.batch(),
-            targetHeating,
-            targetTemperature,
-            targetCOP,
-            targetEnergyPerTick,
-            splitRatio,
-            lowerTemperatureTolerance,
-            upperTemperatureTolerance,
-            COLD_RESERVOIR_TEMPERATURE));
+        IFNSplitHeatPumpPlanner.Plan plan = IFNSplitHeatPumpPlanner.plan(
+            IFNSplitHeatPumpPlanner.Request.of(
+                operatingMode.toIFNMode(),
+                context.redOutputNetwork,
+                inputFluid,
+                inputBatch.batch(),
+                targetHeating,
+                targetTemperature,
+                targetCOP,
+                targetEnergyPerTick,
+                splitRatio,
+                lowerTemperatureTolerance,
+                upperTemperatureTolerance,
+                AMBIENT_RESERVOIR_TEMPERATURE));
         CheckRecipeResult planStatus = IFNMachineResultMapper.toRecipeResult(plan.getStatus());
         if (planStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
             return planStatus;
@@ -323,20 +325,20 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         final double requestedColdSpecificEnthalpy = plan.getColdOutputSpecificEnthalpy();
         IFNBufferedSplitOutputProcess.Result processResult = IFNBufferedSplitOutputProcess.execute(
             IFNBufferedSplitOutputProcess.Request.of(
-            context.inputNetwork,
-            context.redOutputNetwork,
-            machineProcessState.outputBuffer(),
-            HeatPumpOutputPorts.RED,
-            inputFluid,
-            context.blueOutputNetwork,
-            machineProcessState.outputBuffer(),
-            HeatPumpOutputPorts.BLUE,
-            inputFluid,
-            amountToProcessQ,
-            splitRatio,
-            ignored -> requestedHotSpecificEnthalpy,
-            ignored -> requestedColdSpecificEnthalpy,
-            IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
+                context.inputNetwork,
+                context.redOutputNetwork,
+                machineProcessState.outputBuffer(),
+                HeatPumpOutputPorts.RED,
+                inputFluid,
+                context.blueOutputNetwork,
+                machineProcessState.outputBuffer(),
+                HeatPumpOutputPorts.BLUE,
+                inputFluid,
+                amountToProcessQ,
+                splitRatio,
+                ignored -> requestedHotSpecificEnthalpy,
+                ignored -> requestedColdSpecificEnthalpy,
+                IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
 
         if (processResult.getStatus() != IFNMachineProcessStatus.SUCCESS) {
             return IFNMachineResultMapper.toRecipeResult(processResult.getStatus());
@@ -368,32 +370,29 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return networkStatus;
         }
 
-        IFNMachineBatchPlanner.NetworkInputBatchPlan redInputBatch = IFNMachineBatchPlanner.planNetworkInputBatch(
-            context.redInputNetwork,
-            fluidAmountPerOperation
-        );
-        IFNMachineBatchPlanner.NetworkInputBatchPlan blueInputBatch = IFNMachineBatchPlanner.planNetworkInputBatch(
-            context.blueInputNetwork,
-            fluidAmountPerOperation
-        );
+        IFNMachineBatchPlanner.NetworkInputBatchPlan redInputBatch = IFNMachineBatchPlanner
+            .planNetworkInputBatch(context.redInputNetwork, fluidAmountPerOperation);
+        IFNMachineBatchPlanner.NetworkInputBatchPlan blueInputBatch = IFNMachineBatchPlanner
+            .planNetworkInputBatch(context.blueInputNetwork, fluidAmountPerOperation);
         if (!redInputBatch.isValid() || !blueInputBatch.isValid()) return CheckRecipeResultRegistry.NO_RECIPE;
         Fluid redFluid = redInputBatch.fluid();
         Fluid blueFluid = blueInputBatch.fluid();
 
-        IFNHeatExchangerPlanner.Plan plan = IFNHeatExchangerPlanner.plan(IFNHeatExchangerPlanner.Request.of(
-            operatingMode.toIFNMode(),
-            context.redOutputNetwork,
-            context.blueOutputNetwork,
-            redFluid,
-            blueFluid,
-            redInputBatch.batch(),
-            blueInputBatch.batch(),
-            configuringHotStream,
-            targetTemperature,
-            targetCOP,
-            targetEnergyPerTick,
-            lowerTemperatureTolerance,
-            upperTemperatureTolerance));
+        IFNHeatExchangerPlanner.Plan plan = IFNHeatExchangerPlanner.plan(
+            IFNHeatExchangerPlanner.Request.of(
+                operatingMode.toIFNMode(),
+                context.redOutputNetwork,
+                context.blueOutputNetwork,
+                redFluid,
+                blueFluid,
+                redInputBatch.batch(),
+                blueInputBatch.batch(),
+                configuringHotStream,
+                targetTemperature,
+                targetCOP,
+                targetEnergyPerTick,
+                lowerTemperatureTolerance,
+                upperTemperatureTolerance));
         CheckRecipeResult planStatus = IFNMachineResultMapper.toRecipeResult(plan.getStatus());
         if (planStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
             return planStatus;
@@ -408,21 +407,21 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         final double requestedBlueOutH = plan.getBlueOutputSpecificEnthalpy();
         IFNBufferedDualOutputProcess.Result processResult = IFNBufferedDualOutputProcess.execute(
             IFNBufferedDualOutputProcess.Request.of(
-            context.redInputNetwork,
-            context.redOutputNetwork,
-            machineProcessState.outputBuffer(),
-            HeatPumpOutputPorts.RED,
-            redFluid,
-            originalRedProcessQ,
-            context.blueInputNetwork,
-            context.blueOutputNetwork,
-            machineProcessState.outputBuffer(),
-            HeatPumpOutputPorts.BLUE,
-            blueFluid,
-            originalBlueProcessQ,
-            ignored -> requestedRedOutH,
-            ignored -> requestedBlueOutH,
-            IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
+                context.redInputNetwork,
+                context.redOutputNetwork,
+                machineProcessState.outputBuffer(),
+                HeatPumpOutputPorts.RED,
+                redFluid,
+                originalRedProcessQ,
+                context.blueInputNetwork,
+                context.blueOutputNetwork,
+                machineProcessState.outputBuffer(),
+                HeatPumpOutputPorts.BLUE,
+                blueFluid,
+                originalBlueProcessQ,
+                ignored -> requestedRedOutH,
+                ignored -> requestedBlueOutH,
+                IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
         if (processResult.getStatus() != IFNMachineProcessStatus.SUCCESS) {
             return IFNMachineResultMapper.toRecipeResult(processResult.getStatus());
         }
@@ -432,16 +431,10 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         double finalRatio = Math.min(ratioRed, ratioBlue);
 
         if (finalRatio < 1.0 && originalEnergyCost > 0L) {
-            long scaledRedEnergy = IFNMachineThermo.scaleEnergyCost(
-                originalEnergyCost,
-                originalRedProcessQ,
-                processResult.getFirstAmountQ()
-            );
-            long scaledBlueEnergy = IFNMachineThermo.scaleEnergyCost(
-                originalEnergyCost,
-                originalBlueProcessQ,
-                processResult.getSecondAmountQ()
-            );
+            long scaledRedEnergy = IFNMachineThermo
+                .scaleEnergyCost(originalEnergyCost, originalRedProcessQ, processResult.getFirstAmountQ());
+            long scaledBlueEnergy = IFNMachineThermo
+                .scaleEnergyCost(originalEnergyCost, originalBlueProcessQ, processResult.getSecondAmountQ());
             energyCost = Math.min(scaledRedEnergy, scaledBlueEnergy);
         }
 
@@ -466,27 +459,26 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return networkStatus;
         }
 
-        IFNMachineBatchPlanner.NetworkInputBatchPlan inputBatch = IFNMachineBatchPlanner.planNetworkInputBatch(
-            context.inputNetwork,
-            fluidAmountPerOperation
-        );
+        IFNMachineBatchPlanner.NetworkInputBatchPlan inputBatch = IFNMachineBatchPlanner
+            .planNetworkInputBatch(context.inputNetwork, fluidAmountPerOperation);
         if (!inputBatch.isValid()) {
             return CheckRecipeResultRegistry.NO_RECIPE;
         }
         Fluid inputFluid = inputBatch.fluid();
         double inputSpecificEnthalpy = inputBatch.specificEnthalpy();
-        IFNNormalHeatPumpPlanner.Plan plan = IFNNormalHeatPumpPlanner.plan(IFNNormalHeatPumpPlanner.Request.of(
-            operatingMode.toIFNMode(),
-            context.outputNetwork,
-            inputFluid,
-            inputBatch.batch(),
-            targetHeating,
-            targetTemperature,
-            targetCOP,
-            targetEnergyPerTick,
-            lowerTemperatureTolerance,
-            upperTemperatureTolerance,
-            COLD_RESERVOIR_TEMPERATURE));
+        IFNNormalHeatPumpPlanner.Plan plan = IFNNormalHeatPumpPlanner.plan(
+            IFNNormalHeatPumpPlanner.Request.of(
+                operatingMode.toIFNMode(),
+                context.outputNetwork,
+                inputFluid,
+                inputBatch.batch(),
+                targetHeating,
+                targetTemperature,
+                targetCOP,
+                targetEnergyPerTick,
+                lowerTemperatureTolerance,
+                upperTemperatureTolerance,
+                AMBIENT_RESERVOIR_TEMPERATURE));
         CheckRecipeResult planStatus = IFNMachineResultMapper.toRecipeResult(plan.getStatus());
         if (planStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
             return planStatus;
@@ -501,20 +493,18 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         double requestedOutputTemperature = plan.getOutputTemperature();
         IFNBufferedSingleOutputProcess.Result processResult = IFNBufferedSingleOutputProcess.execute(
             IFNBufferedSingleOutputProcess.Request.of(
-            context.inputNetwork,
-            context.outputNetwork,
-            machineProcessState.outputBuffer(),
-            HeatPumpOutputPorts.NORMAL,
-            inputFluid,
-            amountToProcessQ,
-            amountQ -> targetOutputState
-                ? IFNMachineThermo.computeTargetSpecificEnthalpyForStateAdd(
+                context.inputNetwork,
+                context.outputNetwork,
+                machineProcessState.outputBuffer(),
+                HeatPumpOutputPorts.NORMAL,
+                inputFluid,
+                amountToProcessQ,
+                amountQ -> targetOutputState ? IFNMachineThermo.computeTargetSpecificEnthalpyForStateAdd(
                     context.outputNetwork,
                     inputFluid,
                     requestedOutputTemperature,
-                    amountQ)
-                : requestedOutputSpecificEnthalpy,
-            IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
+                    amountQ) : requestedOutputSpecificEnthalpy,
+                IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
 
         if (processResult.getStatus() != IFNMachineProcessStatus.SUCCESS) {
             return IFNMachineResultMapper.toRecipeResult(processResult.getStatus());
@@ -524,7 +514,8 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         double outputSpecificEnthalpy = processResult.getOutputSpecificEnthalpy();
 
         if (amountToProcessQ != originalAmountToProcessQ && totalEnergyCost > 0L) {
-            totalEnergyCost = IFNMachineThermo.scaleEnergyCost(totalEnergyCost, originalAmountToProcessQ, amountToProcessQ);
+            totalEnergyCost = IFNMachineThermo
+                .scaleEnergyCost(totalEnergyCost, originalAmountToProcessQ, amountToProcessQ);
         }
 
         if (targetOutputState) {
@@ -533,15 +524,11 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
                 outputSpecificEnthalpy,
                 amountToProcessQ,
                 currentCOP,
-                currentEfficiencyPenalty
-            );
+                currentEfficiencyPenalty);
         }
 
-        float outputTemperature = (float) FluidThermalProperties.getTemperatureFromPH(
-            inputFluid,
-            context.outputNetwork.getPressure(),
-            outputSpecificEnthalpy
-        );
+        float outputTemperature = (float) FluidThermalProperties
+            .getTemperatureFromPH(inputFluid, context.outputNetwork.getPressure(), outputSpecificEnthalpy);
         return finishSuccessfulProcess(totalEnergyCost, plan.isPassthrough(), outputTemperature);
     }
 
@@ -561,14 +548,16 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
 
     private MTEIntegratedFluidInputHatch getInputHatchByColor(int color) {
         for (MTEIntegratedFluidInputHatch hatch : mIntegratedInputHatches) {
-            if (hatch.getBaseMetaTileEntity().getColorization() == color) return hatch;
+            if (hatch.getBaseMetaTileEntity()
+                .getColorization() == color) return hatch;
         }
         return null;
     }
 
     private MTEIntegratedFluidOutputHatch getOutputHatchByColor(int color) {
         for (MTEIntegratedFluidOutputHatch hatch : mIntegratedOutputHatches) {
-            if (hatch.getBaseMetaTileEntity().getColorization() == color) return hatch;
+            if (hatch.getBaseMetaTileEntity()
+                .getColorization() == color) return hatch;
         }
         return null;
     }
@@ -578,8 +567,10 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return null;
         }
         return new NormalModeContext(
-            mIntegratedInputHatches.get(0).getNetwork(),
-            mIntegratedOutputHatches.get(0).getNetwork());
+            mIntegratedInputHatches.get(0)
+                .getNetwork(),
+            mIntegratedOutputHatches.get(0)
+                .getNetwork());
     }
 
     private SplitFlowContext selectSplitFlowContext() {
@@ -589,7 +580,8 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return null;
         }
         return new SplitFlowContext(
-            mIntegratedInputHatches.get(0).getNetwork(),
+            mIntegratedInputHatches.get(0)
+                .getNetwork(),
             redOutput.getNetwork(),
             blueOutput.getNetwork());
     }
@@ -626,9 +618,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         private final IntegratedFluidNetwork redOutputNetwork;
         private final IntegratedFluidNetwork blueOutputNetwork;
 
-        private SplitFlowContext(
-            IntegratedFluidNetwork inputNetwork,
-            IntegratedFluidNetwork redOutputNetwork,
+        private SplitFlowContext(IntegratedFluidNetwork inputNetwork, IntegratedFluidNetwork redOutputNetwork,
             IntegratedFluidNetwork blueOutputNetwork) {
             this.inputNetwork = inputNetwork;
             this.redOutputNetwork = redOutputNetwork;
@@ -643,18 +633,14 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         private final IntegratedFluidNetwork redOutputNetwork;
         private final IntegratedFluidNetwork blueOutputNetwork;
 
-        private HeatExchangerContext(
-            IntegratedFluidNetwork redInputNetwork,
-            IntegratedFluidNetwork blueInputNetwork,
-            IntegratedFluidNetwork redOutputNetwork,
-            IntegratedFluidNetwork blueOutputNetwork) {
+        private HeatExchangerContext(IntegratedFluidNetwork redInputNetwork, IntegratedFluidNetwork blueInputNetwork,
+            IntegratedFluidNetwork redOutputNetwork, IntegratedFluidNetwork blueOutputNetwork) {
             this.redInputNetwork = redInputNetwork;
             this.blueInputNetwork = blueInputNetwork;
             this.redOutputNetwork = redOutputNetwork;
             this.blueOutputNetwork = blueOutputNetwork;
         }
     }
-
 
     @Override
     public void construct(ItemStack stackSize, boolean hintsOnly) {
@@ -681,25 +667,29 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     // ===== Helper Methods for GUI =====
     public float getInputTemperature() {
         if (mIntegratedInputHatches.isEmpty()) return 0.0f;
-        var network = mIntegratedInputHatches.get(0).getNetwork();
+        var network = mIntegratedInputHatches.get(0)
+            .getNetwork();
         return getNetworkTemperature(network);
     }
 
     public float getOutputTemperature() {
         if (mIntegratedOutputHatches.isEmpty()) return 0.0f;
-        var network = mIntegratedOutputHatches.get(0).getNetwork();
+        var network = mIntegratedOutputHatches.get(0)
+            .getNetwork();
         return getNetworkTemperature(network);
     }
 
     public int getInputNetworkCapacity() {
         if (mIntegratedInputHatches.isEmpty()) return 0;
-        var network = mIntegratedInputHatches.get(0).getNetwork();
+        var network = mIntegratedInputHatches.get(0)
+            .getNetwork();
         return network != null ? network.getTotalCapacity() : 0;
     }
 
     public int getInputNetworkStored() {
         if (mIntegratedInputHatches.isEmpty()) return 0;
-        var network = mIntegratedInputHatches.get(0).getNetwork();
+        var network = mIntegratedInputHatches.get(0)
+            .getNetwork();
         if (network == null) return 0;
         var fluid = network.getStoredFluid();
         return fluid != null ? fluid.amount : 0;
@@ -707,13 +697,15 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
 
     public int getOutputNetworkCapacity() {
         if (mIntegratedOutputHatches.isEmpty()) return 0;
-        var network = mIntegratedOutputHatches.get(0).getNetwork();
+        var network = mIntegratedOutputHatches.get(0)
+            .getNetwork();
         return network != null ? network.getTotalCapacity() : 0;
     }
 
     public int getOutputNetworkStored() {
         if (mIntegratedOutputHatches.isEmpty()) return 0;
-        var network = mIntegratedOutputHatches.get(0).getNetwork();
+        var network = mIntegratedOutputHatches.get(0)
+            .getNetwork();
         if (network == null) return 0;
         var fluid = network.getStoredFluid();
         return fluid != null ? fluid.amount : 0;
@@ -721,7 +713,8 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
 
     public String getFluidName() {
         if (mIntegratedInputHatches.isEmpty()) return "";
-        var network = mIntegratedInputHatches.get(0).getNetwork();
+        var network = mIntegratedInputHatches.get(0)
+            .getNetwork();
         if (network == null) return "";
         Fluid fluid = network.getFluid();
         return fluid != null ? fluid.getLocalizedName() : "";
@@ -735,11 +728,8 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         if (fluid == null || network.getAmountQ() <= 0L) {
             return 0.0f;
         }
-        double temperature = FluidThermalProperties.getTemperatureFromPH(
-            fluid,
-            network.getPressure(),
-            network.getSpecificEnthalpy()
-        );
+        double temperature = FluidThermalProperties
+            .getTemperatureFromPH(fluid, network.getPressure(), network.getSpecificEnthalpy());
         return (float) temperature;
     }
 
@@ -758,17 +748,15 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     }
 
     private void applyMachineWorkPlan(long energyCostEu, boolean passthrough) {
-        IFNHeatPumpMachineWorkPlan workPlan = IFNHeatPumpMachineWorkPlan.of(
-            passthrough,
-            operatingMode == HeatPumpMode.TARGET_ENERGY,
-            energyCostEu,
-            targetEnergyPerTick);
+        IFNHeatPumpMachineWorkPlan workPlan = IFNHeatPumpMachineWorkPlan
+            .of(passthrough, operatingMode == HeatPumpMode.TARGET_ENERGY, energyCostEu, targetEnergyPerTick);
         this.totalEnergyCost = workPlan.getEnergyCostPerTick();
         this.mMaxProgresstime = workPlan.getMaxProgressTime();
         this.mEUt = workPlan.getEuT();
         if (workPlan.shouldSetEfficiency()) {
             this.mEfficiency = workPlan.getEfficiency();
         }
+        machineProcessState.beginWork(workPlan);
     }
 
     public float getCOP() {
@@ -950,9 +938,8 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return false; // In HX or Split Flow mode, multiple hatches are expected
         }
 
-        return IFNHeatPumpHatchLayout.hasTooManyNormalModeHatches(
-            mIntegratedInputHatches.size(),
-            mIntegratedOutputHatches.size());
+        return IFNHeatPumpHatchLayout
+            .hasTooManyNormalModeHatches(mIntegratedInputHatches.size(), mIntegratedOutputHatches.size());
     }
 
     /**
@@ -968,9 +955,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return true; // Not in Split Flow mode, so don't show warning
         }
 
-        return IFNHeatPumpHatchLayout.isValidSplitFlowLayout(
-            mIntegratedInputHatches.size(),
-            outputHatchColors());
+        return IFNHeatPumpHatchLayout.isValidSplitFlowLayout(mIntegratedInputHatches.size(), outputHatchColors());
     }
 
     /**
@@ -995,9 +980,8 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             return cachedHatchValidation;
         }
 
-        cachedHatchValidation = IFNHeatPumpHatchLayout.isValidHeatExchangerLayout(
-            inputHatchColors(),
-            outputHatchColors());
+        cachedHatchValidation = IFNHeatPumpHatchLayout
+            .isValidHeatExchangerLayout(inputHatchColors(), outputHatchColors());
         lastValidationCheck = currentTick;
 
         return cachedHatchValidation;
@@ -1006,7 +990,9 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     private int[] inputHatchColors() {
         int[] colors = new int[mIntegratedInputHatches.size()];
         for (int i = 0; i < mIntegratedInputHatches.size(); i++) {
-            colors[i] = mIntegratedInputHatches.get(i).getBaseMetaTileEntity().getColorization();
+            colors[i] = mIntegratedInputHatches.get(i)
+                .getBaseMetaTileEntity()
+                .getColorization();
         }
         return colors;
     }
@@ -1014,7 +1000,9 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     private int[] outputHatchColors() {
         int[] colors = new int[mIntegratedOutputHatches.size()];
         for (int i = 0; i < mIntegratedOutputHatches.size(); i++) {
-            colors[i] = mIntegratedOutputHatches.get(i).getBaseMetaTileEntity().getColorization();
+            colors[i] = mIntegratedOutputHatches.get(i)
+                .getBaseMetaTileEntity()
+                .getColorization();
         }
         return colors;
     }

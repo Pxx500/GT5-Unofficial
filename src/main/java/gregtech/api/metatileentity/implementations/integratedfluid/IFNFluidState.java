@@ -17,7 +17,7 @@ public final class IFNFluidState {
     public IFNFluidState(String fluidName, long amountQ, long enthalpyQ, float pressureBar) {
         this.fluidName = amountQ > 0L ? fluidName : null;
         this.amountQ = Math.max(0L, amountQ);
-        this.enthalpyQ = this.amountQ > 0L ? Math.max(0L, enthalpyQ) : 0L;
+        this.enthalpyQ = this.amountQ > 0L ? enthalpyQ : 0L;
         this.pressureBar = IFNPressurePolicy.clampMinimum(pressureBar);
     }
 
@@ -64,11 +64,10 @@ public final class IFNFluidState {
         }
         long removedAmountQ = Math.min(extractAmountQ, amountQ);
         long remainingAmountQ = amountQ - removedAmountQ;
-        if (remainingAmountQ < IntegratedFluidNetwork.AMOUNT_SCALE) {
+        if (remainingAmountQ == 0L) {
             return new IFNFluidState(null, 0L, 0L, pressureBar);
         }
-        long removedEnthalpyQ = removedAmountQ == amountQ
-            ? enthalpyQ
+        long removedEnthalpyQ = removedAmountQ == amountQ ? enthalpyQ
             : (long) (enthalpyQ * ((double) removedAmountQ / (double) amountQ));
         return new IFNFluidState(fluidName, remainingAmountQ, enthalpyQ - removedEnthalpyQ, pressureBar);
     }

@@ -8,9 +8,12 @@ import net.minecraftforge.fluids.FluidStack;
  * All fluids must be registered in IFNFluidThermalRegistry.
  */
 public class FluidThermalProperties {
+
+    static final float MAX_HEAT_PUMP_COP = 50.0f;
     static {
         IFNFluidThermalRegistration.init();
     }
+
     public enum Phase {
         LIQUID,
         TWO_PHASE,
@@ -19,6 +22,7 @@ public class FluidThermalProperties {
     }
 
     public static final class PhaseResult {
+
         public final Phase phase;
         public final double quality;
 
@@ -129,7 +133,7 @@ public class FluidThermalProperties {
         // COP = 1.0 means 100% of input energy goes to heating (like a resistive heater)
         // COP > 1.0 means the heat pump is moving more heat than energy consumed
         // Higher upper limit since we're using ideal Carnot efficiency
-        return Math.max(1.0f, Math.min(carnotCOP, 50.0f));
+        return Math.max(1.0f, Math.min(carnotCOP, MAX_HEAT_PUMP_COP));
     }
 
     /**
@@ -144,8 +148,8 @@ public class FluidThermalProperties {
      * @param hotTemperature   Temperature of hot reservoir (K)
      * @return Actual energy required in EU
      */
-    public static long calculateHeatPumpEnergy(FluidStack fluidStack, float temperatureDelta,
-                                                float coldTemperature, float hotTemperature) {
+    public static long calculateHeatPumpEnergy(FluidStack fluidStack, float temperatureDelta, float coldTemperature,
+        float hotTemperature) {
         long idealEnergy = calculateIdealEnergyForTemperatureChange(fluidStack, temperatureDelta);
         float cop = calculateHeatPumpCOP(coldTemperature, hotTemperature);
         return (long) Math.ceil(idealEnergy / cop);
@@ -188,8 +192,8 @@ public class FluidThermalProperties {
      * @param temperature2 Temperature of second fluid (K)
      * @return Weighted average temperature in Kelvin
      */
-    public static float calculateMixedTemperature(FluidStack fluid1, float temperature1,
-                                                   FluidStack fluid2, float temperature2) {
+    public static float calculateMixedTemperature(FluidStack fluid1, float temperature1, FluidStack fluid2,
+        float temperature2) {
         if (fluid1 == null || fluid1.amount <= 0) {
             return temperature2;
         }
@@ -205,8 +209,7 @@ public class FluidThermalProperties {
             return (temperature1 + temperature2) / 2.0f;
         }
 
-        return (temperature1 * heatCapacity1 + temperature2 * heatCapacity2)
-            / (heatCapacity1 + heatCapacity2);
+        return (temperature1 * heatCapacity1 + temperature2 * heatCapacity2) / (heatCapacity1 + heatCapacity2);
     }
 
     /**

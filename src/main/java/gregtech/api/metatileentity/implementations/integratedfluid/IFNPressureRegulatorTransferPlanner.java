@@ -9,7 +9,9 @@ public final class IFNPressureRegulatorTransferPlanner {
     public static Plan plan(IntegratedFluidNetwork inputNetwork, IntegratedFluidNetwork outputNetwork, Fluid fluid,
         double outputSpecificEnthalpy, float setpointPressureBar, float overshootToleranceBar, long requestedAmountQ,
         long maxPacketAmountQ) {
-        if (inputNetwork == null || outputNetwork == null || fluid == null
+        if (inputNetwork == null || outputNetwork == null
+            || inputNetwork == outputNetwork
+            || fluid == null
             || requestedAmountQ < IntegratedFluidNetwork.AMOUNT_SCALE
             || maxPacketAmountQ < IntegratedFluidNetwork.AMOUNT_SCALE) {
             return Plan.rejected(Status.INVALID_REQUEST);
@@ -20,7 +22,8 @@ public final class IFNPressureRegulatorTransferPlanner {
         if (!IFNNetworkTransferGate.isOperational(outputNetwork)) {
             return Plan.rejected(Status.OUTPUT_BLOCKED);
         }
-        if (outputNetwork.getPressure() >= setpointPressureBar) {
+        if (outputNetwork.getPressure() >= setpointPressureBar
+            || outputNetwork.getPressure() >= inputNetwork.getPressure()) {
             return Plan.rejected(Status.OUTPUT_BLOCKED);
         }
 
@@ -42,7 +45,8 @@ public final class IFNPressureRegulatorTransferPlanner {
 
             long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(outputSpecificEnthalpy, mid);
             float predictedOutputPressure = outputNetwork.predictPressureAfterStateAdd(fluid, mid, enthalpyQ);
-            if (predictedOutputPressure <= maxAllowedPressure) {
+            float predictedInputPressure = inputNetwork.predictPressureAfterExtract(mid);
+            if (predictedOutputPressure <= maxAllowedPressure && predictedOutputPressure <= predictedInputPressure) {
                 bestAmountQ = mid;
                 bestOutputPressure = predictedOutputPressure;
                 low = mid + 1L;

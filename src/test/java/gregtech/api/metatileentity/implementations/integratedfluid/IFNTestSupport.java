@@ -74,17 +74,24 @@ public final class IFNTestSupport {
     public static SeededState seedNetworkAtPressureAndTemperature(IntegratedFluidNetwork network, Fluid fluid,
         double targetPressureBar, double temperatureK) {
         if (network == null || fluid == null) {
-            return new SeededState(0L, IntegratedFluidNetwork.DEFAULT_PRESSURE, IntegratedFluidNetwork.DEFAULT_TEMPERATURE);
+            return new SeededState(
+                0L,
+                IntegratedFluidNetwork.DEFAULT_PRESSURE,
+                IntegratedFluidNetwork.DEFAULT_TEMPERATURE);
         }
 
         double clampedTargetPressure = IFNPressurePolicy.clampMinimum(targetPressureBar);
-        double specificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(fluid, clampedTargetPressure, temperatureK);
+        double specificEnthalpy = FluidThermalProperties
+            .getSpecificEnthalpyFromPT(fluid, clampedTargetPressure, temperatureK);
         long amountQ = findAmountForPressure(network, fluid, specificEnthalpy, clampedTargetPressure);
 
         for (int pass = 0; pass < 4; pass++) {
             network.clearFluid();
             if (amountQ >= IntegratedFluidNetwork.AMOUNT_SCALE) {
-                network.addState(fluid, amountQ, IntegratedFluidNetwork.toEnthalpyQFromSpecific(specificEnthalpy, amountQ));
+                network.addState(
+                    fluid,
+                    amountQ,
+                    IntegratedFluidNetwork.toEnthalpyQFromSpecific(specificEnthalpy, amountQ));
             }
 
             float actualPressure = network.getPressure();
@@ -93,11 +100,8 @@ public final class IFNTestSupport {
                 return new SeededState(amountQ, actualPressure, actualTemperature);
             }
 
-            specificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(
-                fluid,
-                IFNPressurePolicy.clampMinimum(actualPressure),
-                temperatureK
-            );
+            specificEnthalpy = FluidThermalProperties
+                .getSpecificEnthalpyFromPT(fluid, IFNPressurePolicy.clampMinimum(actualPressure), temperatureK);
             long refinedAmountQ = findAmountForPressure(network, fluid, specificEnthalpy, clampedTargetPressure);
             if (refinedAmountQ == amountQ) {
                 return new SeededState(amountQ, actualPressure, actualTemperature);
@@ -120,78 +124,89 @@ public final class IFNTestSupport {
 
         registerTestFluidMetadata(LIQUID_ID, LIQUID_ID, "IFN Test Liquid", 1.0d, 1.0d);
         registerTestFluidMetadata(VAPOR_ID, VAPOR_ID, "IFN Test Vapor", 1.0d, 10.0d);
-        registerTestFluidMetadata(PRESSURE_SENSITIVE_LIQUID_ID, PRESSURE_SENSITIVE_LIQUID_ID,
-            "IFN Test Pressure Sensitive Liquid", 1.0d, 1.0d);
-        registerTestFluidMetadata(GAME_LIKE_COOLANT_ID, GAME_LIKE_COOLANT_ID,
-            "IFN Test Game Like Coolant", 1.0d, 1.0d);
+        registerTestFluidMetadata(
+            PRESSURE_SENSITIVE_LIQUID_ID,
+            PRESSURE_SENSITIVE_LIQUID_ID,
+            "IFN Test Pressure Sensitive Liquid",
+            1.0d,
+            1.0d);
+        registerTestFluidMetadata(GAME_LIKE_COOLANT_ID, GAME_LIKE_COOLANT_ID, "IFN Test Game Like Coolant", 1.0d, 1.0d);
 
-        IFNFluidThermalRegistry.register(liquidFluid, builder -> builder
-            .setCriticalPressure(100.0d)
-            .setCriticalTemperature(1000.0d)
-            .setFreezeTemperature(100.0d)
-            .setSpecificHeatCapacity(1.0d)
-            .setTemperatureFromPH((pBar, h) -> h)
-            .setPhaseFromPH((pBar, h) -> new FluidThermalProperties.PhaseResult(FluidThermalProperties.Phase.LIQUID, 0.0d))
-            .setSpecificVolumeFromPH((pBar, h) -> 1.0d)
-            .setSaturationTemperatureFromP(pBar -> 500.0d)
-            .setHfFromP(pBar -> 500.0d)
-            .setHgFromP(pBar -> 600.0d)
-            .setSpecificEnthalpyFromPT((pBar, temperatureK) -> temperatureK));
+        IFNFluidThermalRegistry.register(
+            liquidFluid,
+            builder -> builder.setCriticalPressure(100.0d)
+                .setCriticalTemperature(1000.0d)
+                .setFreezeTemperature(100.0d)
+                .setSpecificHeatCapacity(1.0d)
+                .setTemperatureFromPH((pBar, h) -> h)
+                .setPhaseFromPH(
+                    (pBar, h) -> new FluidThermalProperties.PhaseResult(FluidThermalProperties.Phase.LIQUID, 0.0d))
+                .setSpecificVolumeFromPH((pBar, h) -> 1.0d)
+                .setSaturationTemperatureFromP(pBar -> 500.0d)
+                .setHfFromP(pBar -> 500.0d)
+                .setHgFromP(pBar -> 600.0d)
+                .setSpecificEnthalpyFromPT((pBar, temperatureK) -> temperatureK));
 
-        IFNFluidThermalRegistry.register(vaporFluid, builder -> builder
-            .setCriticalPressure(100.0d)
-            .setCriticalTemperature(1000.0d)
-            .setFreezeTemperature(1.0d)
-            .setSpecificHeatCapacity(1.0d)
-            .setTemperatureFromPH((pBar, h) -> h)
-            .setPhaseFromPH((pBar, h) -> new FluidThermalProperties.PhaseResult(FluidThermalProperties.Phase.VAPOR, 1.0d))
-            .setSpecificVolumeFromPH((pBar, h) -> 10.0d)
-            .setSaturationTemperatureFromP(pBar -> 100.0d)
-            .setHfFromP(pBar -> 0.0d)
-            .setHgFromP(pBar -> 1.0d)
-            .setSpecificEnthalpyFromPT((pBar, temperatureK) -> temperatureK));
+        IFNFluidThermalRegistry.register(
+            vaporFluid,
+            builder -> builder.setCriticalPressure(100.0d)
+                .setCriticalTemperature(1000.0d)
+                .setFreezeTemperature(1.0d)
+                .setSpecificHeatCapacity(1.0d)
+                .setTemperatureFromPH((pBar, h) -> h)
+                .setPhaseFromPH(
+                    (pBar, h) -> new FluidThermalProperties.PhaseResult(FluidThermalProperties.Phase.VAPOR, 1.0d))
+                .setSpecificVolumeFromPH((pBar, h) -> 10.0d * (h / 300.0d) / pBar)
+                .setSaturationTemperatureFromP(pBar -> 100.0d)
+                .setHfFromP(pBar -> 0.0d)
+                .setHgFromP(pBar -> 1.0d)
+                .setSpecificEnthalpyFromPT((pBar, temperatureK) -> temperatureK));
 
-        IFNFluidThermalRegistry.register(pressureSensitiveLiquidFluid, builder -> builder
-            .setCriticalPressure(100.0d)
-            .setCriticalTemperature(1000.0d)
-            .setFreezeTemperature(100.0d)
-            .setSpecificHeatCapacity(1.0d)
-            .setTemperatureFromPH((pBar, h) -> h - pBar)
-            .setPhaseFromPH((pBar, h) -> new FluidThermalProperties.PhaseResult(FluidThermalProperties.Phase.LIQUID, 0.0d))
-            .setSpecificVolumeFromPH((pBar, h) -> 1.0d)
-            .setSaturationTemperatureFromP(pBar -> 500.0d)
-            .setHfFromP(pBar -> 500.0d)
-            .setHgFromP(pBar -> 600.0d)
-            .setSpecificEnthalpyFromPT((pBar, temperatureK) -> temperatureK + pBar));
+        IFNFluidThermalRegistry.register(
+            pressureSensitiveLiquidFluid,
+            builder -> builder.setCriticalPressure(100.0d)
+                .setCriticalTemperature(1000.0d)
+                .setFreezeTemperature(100.0d)
+                .setSpecificHeatCapacity(1.0d)
+                .setTemperatureFromPH((pBar, h) -> h - pBar)
+                .setPhaseFromPH(
+                    (pBar, h) -> new FluidThermalProperties.PhaseResult(FluidThermalProperties.Phase.LIQUID, 0.0d))
+                .setSpecificVolumeFromPH((pBar, h) -> 1.0d)
+                .setSaturationTemperatureFromP(pBar -> 500.0d)
+                .setHfFromP(pBar -> 500.0d)
+                .setHgFromP(pBar -> 600.0d)
+                .setSpecificEnthalpyFromPT((pBar, temperatureK) -> temperatureK + pBar));
 
-        IFNFluidThermalRegistry.register(gameLikeCoolantFluid, builder -> builder
-            .setCriticalPressure(IC2_PC_BAR)
-            .setCriticalTemperature(IC2_TC_K)
-            .setFreezeTemperature(IC2_FREEZE_K)
-            .setSpecificHeatCapacity(IC2_CP_L)
-            .setTemperatureFromPH(IFNTestSupport::ic2TemperatureFromPH)
-            .setPhaseFromPH(IFNTestSupport::ic2PhaseFromPH)
-            .setSpecificVolumeFromPH(IFNTestSupport::ic2SpecificVolumeFromPH)
-            .setSaturationTemperatureFromP(IFNTestSupport::ic2SaturationTemperature)
-            .setHfFromP(IFNTestSupport::ic2Hf)
-            .setHgFromP(IFNTestSupport::ic2Hg)
-            .setSpecificEnthalpyFromPT(IFNTestSupport::ic2SpecificEnthalpyFromPT));
+        IFNFluidThermalRegistry.register(
+            gameLikeCoolantFluid,
+            builder -> builder.setCriticalPressure(IC2_PC_BAR)
+                .setCriticalTemperature(IC2_TC_K)
+                .setFreezeTemperature(IC2_FREEZE_K)
+                .setSpecificHeatCapacity(IC2_CP_L)
+                .setTemperatureFromPH(IFNTestSupport::ic2TemperatureFromPH)
+                .setPhaseFromPH(IFNTestSupport::ic2PhaseFromPH)
+                .setSpecificVolumeFromPH(IFNTestSupport::ic2SpecificVolumeFromPH)
+                .setSaturationTemperatureFromP(IFNTestSupport::ic2SaturationTemperature)
+                .setHfFromP(IFNTestSupport::ic2Hf)
+                .setHgFromP(IFNTestSupport::ic2Hg)
+                .setSpecificEnthalpyFromPT(IFNTestSupport::ic2SpecificEnthalpyFromPT));
 
         initialized = true;
     }
 
     private static void registerTestFluidMetadata(String fluidId, String substanceId, String displayName,
         double liquidSpecificVolume, double vaporSpecificVolumeAtStp) {
-        IFNFluidRegistry.registerMetadata(IFNFluidDefinition.builder(fluidId, substanceId)
-            .displayName(displayName)
-            .criticalPoint(100.0d, 1000.0d)
-            .freezeTemperature(1.0d)
-            .normalBoilingTemperature(500.0d)
-            .saturationSlope(100.0d)
-            .specificHeat(1.0d, 1.0d)
-            .latentHeat(100.0d)
-            .specificVolumes(liquidSpecificVolume, vaporSpecificVolumeAtStp)
-            .build());
+        IFNFluidRegistry.registerMetadata(
+            IFNFluidDefinition.builder(fluidId, substanceId)
+                .displayName(displayName)
+                .criticalPoint(100.0d, 1000.0d)
+                .freezeTemperature(1.0d)
+                .normalBoilingTemperature(500.0d)
+                .saturationSlope(100.0d)
+                .specificHeat(1.0d, 1.0d)
+                .latentHeat(100.0d)
+                .specificVolumes(liquidSpecificVolume, vaporSpecificVolumeAtStp)
+                .build());
     }
 
     private static double ic2SaturationTemperature(double pBar) {
@@ -272,8 +287,7 @@ public final class IFNTestSupport {
                 double dense = clamp(
                     1.0d - Math.abs(temperature - IC2_TC_K) / 30.0d - Math.abs(pBar - IC2_PC_BAR) / 30.0d,
                     0.0d,
-                    1.0d
-                );
+                    1.0d);
                 double vGasSc = gasVolumeFactor(pPa, temperature);
                 double vDense = 2.0d;
                 return (1.0d - dense) * vGasSc + dense * vDense;
@@ -360,6 +374,7 @@ public final class IFNTestSupport {
     }
 
     public static final class SeededState {
+
         public final long amountQ;
         public final float pressureBar;
         public final double temperatureK;
@@ -372,6 +387,7 @@ public final class IFNTestSupport {
     }
 
     private static final class TestMember implements IIntegratedFluidMember {
+
         private final int baseCapacity;
         private final int accumulatorCapacity;
         private final float maxPressureBar;
@@ -424,6 +440,7 @@ public final class IFNTestSupport {
     }
 
     private static final class TestNetwork extends IntegratedFluidNetwork {
+
         private final Fluid fluid;
 
         private TestNetwork(UUID networkId, Fluid fluid) {

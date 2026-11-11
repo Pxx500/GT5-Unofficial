@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 class IntegratedFluidNetworkStateTest {
 
     @Test
-    void addStateDoesNotApplyExtraGasHeating() {
+    void bothInletPathsPreserveTheSuppliedGasEnergy() {
         Fluid vapor = IFNTestSupport.vaporFluid();
         long amountQ = 1_000L * IntegratedFluidNetwork.AMOUNT_SCALE;
         long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(500.0d, amountQ);
@@ -23,7 +23,9 @@ class IntegratedFluidNetworkStateTest {
         flowWorkNetwork.add(vapor, amountQ, enthalpyQ);
 
         assertEquals(500.0f, stateNetwork.getTemperature(), 0.001f);
-        assertTrue(flowWorkNetwork.getTemperature() > 600.0f);
+        assertEquals(500.0f, flowWorkNetwork.getTemperature(), 0.001f);
+        assertEquals(enthalpyQ, stateNetwork.getEnthalpyQ());
+        assertEquals(enthalpyQ, flowWorkNetwork.getEnthalpyQ());
     }
 
     @Test

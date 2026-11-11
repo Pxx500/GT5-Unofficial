@@ -1,6 +1,18 @@
 package gregtech.api.metatileentity.implementations.integratedfluid;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Queue;
+import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
+import java.util.WeakHashMap;
 
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.world.World;

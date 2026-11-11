@@ -10,6 +10,43 @@ import org.junit.jupiter.api.Test;
 class IFNPressureModelTest {
 
     @Test
+    void idealGasPressureScalesWithSubstanceTemperatureAndContainerVolume() {
+        Fluid gas = IFNTestSupport.vaporFluid();
+        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(gas, 1_000, 0, 20.0f);
+        IntegratedFluidNetwork larger = IFNTestSupport.newNetwork(gas, 2_000, 0, 20.0f);
+        long amountQ = 100L * IntegratedFluidNetwork.AMOUNT_SCALE;
+        long enthalpyQ = 30_000L * IntegratedFluidNetwork.ENTHALPY_SCALE;
+        assertTrue(network.addState(gas, amountQ, enthalpyQ));
+        assertTrue(larger.addState(gas, amountQ, enthalpyQ));
+
+        assertEquals(1.0f, network.getPressure(), 0.0001f);
+        assertEquals(0.5f, larger.getPressure(), 0.0001f);
+        network.setTemperature(600.0f);
+        assertEquals(2.0f, network.getPressure(), 0.0001f);
+        assertTrue(network.addState(gas, amountQ, 60_000L * IntegratedFluidNetwork.ENTHALPY_SCALE));
+        assertEquals(4.0f, network.getPressure(), 0.0001f);
+    }
+
+    @Test
+    void steamPressureAndOccupiedVolumeDescribeTheSameNetworkState() {
+        Fluid water = IFNTestSupport.waterFluid();
+        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(water, 10_000, 0, 100.0f);
+        long amountQ = 5L * IntegratedFluidNetwork.AMOUNT_SCALE;
+        long enthalpyQ = 20_000L * IntegratedFluidNetwork.ENTHALPY_SCALE;
+
+        assertTrue(network.addState(water, amountQ, enthalpyQ));
+
+        assertEquals(IntegratedFluidThermoModel.Phase.GAS, network.getPhase());
+        assertEquals(
+            10_000.0d,
+            network.getSolvedState()
+                .occupiedVolumeLiters(),
+            0.1d);
+        assertEquals(amountQ, network.getAmountQ());
+        assertEquals(enthalpyQ, network.getEnthalpyQ());
+    }
+
+    @Test
     void pressureModelMatchesNetworkGasStateAddPrediction() {
         Fluid vapor = IFNTestSupport.vaporFluid();
         IntegratedFluidNetwork network = IFNTestSupport.newNetwork(vapor, 1_000, 100, 10.0f);
@@ -30,7 +67,10 @@ class IFNPressureModelTest {
 
         IFNPressureModel.PressureResult result = IFNPressureModel.compute(vapor, predictedState, limits);
 
-        assertEquals(network.predictPressureAfterStateAdd(vapor, addAmountQ, addEnthalpyQ), result.getPressureBar(), 0.0001f);
+        assertEquals(
+            network.predictPressureAfterStateAdd(vapor, addAmountQ, addEnthalpyQ),
+            result.getPressureBar(),
+            0.0001f);
     }
 
     @Test
@@ -55,7 +95,11 @@ class IFNPressureModelTest {
 
         network.addState(liquid, amountQ, enthalpyQ);
 
-        assertTrue(!network.getCanonicalState().isEmpty());
-        assertTrue(network.getPressureLimitEvaluation().isRuptureRequired());
+        assertTrue(
+            !network.getCanonicalState()
+                .isEmpty());
+        assertTrue(
+            network.getPressureLimitEvaluation()
+                .isRuptureRequired());
     }
 }

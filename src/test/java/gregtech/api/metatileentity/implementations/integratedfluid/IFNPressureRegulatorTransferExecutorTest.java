@@ -10,6 +10,41 @@ import org.junit.jupiter.api.Test;
 class IFNPressureRegulatorTransferExecutorTest {
 
     @Test
+    void largePacketStopsAtPressureEquilibriumBeforeTheSetpoint() {
+        Fluid fluid = IFNTestSupport.pressureSensitiveLiquidFluid();
+        IntegratedFluidNetwork input = networkAtPressure(fluid, 4.0d);
+        IntegratedFluidNetwork output = networkAtPressure(fluid, 2.0d);
+        long totalAmount = input.getAmountQ() + output.getAmountQ();
+        long totalEnergy = input.getEnthalpyQ() + output.getEnthalpyQ();
+
+        IFNPressureRegulatorTransferPlanner.Plan plan = IFNPressureRegulatorTransferExecutor
+            .transfer(input, output, 10.0f, 0.05f, input.getAmountQ());
+
+        assertEquals(IFNPressureRegulatorTransferPlanner.Status.ACCEPTED, plan.status());
+        assertTrue(output.getPressure() <= input.getPressure());
+        assertEquals(totalAmount, input.getAmountQ() + output.getAmountQ());
+        assertEquals(totalEnergy, input.getEnthalpyQ() + output.getEnthalpyQ());
+    }
+
+    @Test
+    void regulatorCannotPumpIntoHigherPressureEvenBelowItsSetpoint() {
+        Fluid fluid = IFNTestSupport.pressureSensitiveLiquidFluid();
+        IntegratedFluidNetwork input = networkAtPressure(fluid, 2.0d);
+        IntegratedFluidNetwork output = networkAtPressure(fluid, 4.0d);
+        long inputAmount = input.getAmountQ();
+        long outputAmount = output.getAmountQ();
+        long totalEnergy = input.getEnthalpyQ() + output.getEnthalpyQ();
+
+        IFNPressureRegulatorTransferPlanner.Plan plan = IFNPressureRegulatorTransferExecutor
+            .transfer(input, output, 6.0f, 0.05f, 1_000L * IntegratedFluidNetwork.AMOUNT_SCALE);
+
+        assertEquals(IFNPressureRegulatorTransferPlanner.Status.OUTPUT_BLOCKED, plan.status());
+        assertEquals(inputAmount, input.getAmountQ());
+        assertEquals(outputAmount, output.getAmountQ());
+        assertEquals(totalEnergy, input.getEnthalpyQ() + output.getEnthalpyQ());
+    }
+
+    @Test
     void acceptedTransferMovesStateWithoutExceedingSetpointTolerance() {
         Fluid fluid = IFNTestSupport.pressureSensitiveLiquidFluid();
         IntegratedFluidNetwork input = networkAtPressure(fluid, 4.0d);
@@ -18,12 +53,8 @@ class IFNPressureRegulatorTransferExecutorTest {
         long outputAmountBefore = output.getAmountQ();
         float outputPressureBefore = output.getPressure();
 
-        IFNPressureRegulatorTransferPlanner.Plan plan = IFNPressureRegulatorTransferExecutor.transfer(
-            input,
-            output,
-            3.0f,
-            0.05f,
-            100L * IntegratedFluidNetwork.AMOUNT_SCALE);
+        IFNPressureRegulatorTransferPlanner.Plan plan = IFNPressureRegulatorTransferExecutor
+            .transfer(input, output, 3.0f, 0.05f, 100L * IntegratedFluidNetwork.AMOUNT_SCALE);
 
         assertEquals(IFNPressureRegulatorTransferPlanner.Status.ACCEPTED, plan.status());
         assertTrue(plan.acceptedAmountQ() > 0L);

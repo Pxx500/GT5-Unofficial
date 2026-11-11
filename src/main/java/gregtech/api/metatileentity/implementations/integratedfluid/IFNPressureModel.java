@@ -26,15 +26,18 @@ public final class IFNPressureModel {
         double amount = toAmount(state.getAmountQ());
         double specificEnthalpy = state.getSpecificEnthalpy();
         double pGuess = IFNPressurePolicy.clampMinimum((double) state.getPressureBar());
-        FluidThermalProperties.PhaseResult phase =
-            FluidThermalProperties.getPhaseFromPH(fluid, pGuess, specificEnthalpy);
+        FluidThermalProperties.PhaseResult phase = FluidThermalProperties
+            .getPhaseFromPH(fluid, pGuess, specificEnthalpy);
 
         if (phase.phase == FluidThermalProperties.Phase.VAPOR
             || phase.phase == FluidThermalProperties.Phase.SUPERCRITICAL) {
             double pGas = computeGasPressureBar(fluid, amount, specificEnthalpy, limits.totalCapacity, pGuess);
             float clampedPressure = (float) IFNPressurePolicy.clampMinimum(pGas);
             IFNPressureLimitEvaluation limitEvaluation = evaluatePressureLimit(pGas, limits);
-            return new PressureResult(clampedPressure, limitEvaluation.isOverLimit(), limitEvaluation.isRuptureRequired());
+            return new PressureResult(
+                clampedPressure,
+                limitEvaluation.isOverLimit(),
+                limitEvaluation.isRuptureRequired());
         }
 
         if (limits.accumulatorCapacity <= 0) {
@@ -73,16 +76,15 @@ public final class IFNPressureModel {
         double specificVolume = IntegratedFluidThermoModel.specificVolumeFromPressureAndSpecificEnthalpy(
             fluid,
             IntegratedFluidThermoModel.BASE_PRESSURE,
-            specificEnthalpy
-        );
+            specificEnthalpy);
         if (specificVolume <= 0.0d || Double.isNaN(specificVolume) || Double.isInfinite(specificVolume)) {
             return 1.0d;
         }
         return specificVolume;
     }
 
-    public static double computeMaxSafeLiquidOccupiedVolume(int baseCapacity, int accumulatorCapacity, int totalCapacity,
-        double maxPressure) {
+    public static double computeMaxSafeLiquidOccupiedVolume(int baseCapacity, int accumulatorCapacity,
+        int totalCapacity, double maxPressure) {
         if (totalCapacity <= 0) {
             return 0.0d;
         }
@@ -106,18 +108,16 @@ public final class IFNPressureModel {
         return Math.max(0.0d, Math.min((double) totalCapacity, baseCapacity + accumulatorCapacity + overfill));
     }
 
-    private static double computeGasPressureBar(Fluid fluid, double amountStd, double specificEnthalpy, int totalCapacity,
-        double pInit) {
+    private static double computeGasPressureBar(Fluid fluid, double amountRefLiters, double specificEnthalpy,
+        int totalCapacity, double pInit) {
         if (totalCapacity <= 0) {
             return IntegratedFluidThermoModel.BASE_PRESSURE;
         }
 
         double p = IFNPressurePolicy.clampMinimum(pInit);
         for (int it = 0; it < GAS_PRESSURE_RELAXATION_ITERATIONS; it++) {
-            double temperature = FluidThermalProperties.getTemperatureFromPH(fluid, p, specificEnthalpy);
-            double pNew = IntegratedFluidThermoModel.BASE_PRESSURE
-                * (amountStd / (double) totalCapacity)
-                * (temperature / IntegratedFluidThermoModel.BASE_TEMPERATURE);
+            double specificVolume = FluidThermalProperties.getSpecificVolumeFromPH(fluid, p, specificEnthalpy);
+            double pNew = p * (amountRefLiters * specificVolume / totalCapacity);
 
             if (Double.isNaN(pNew) || Double.isInfinite(pNew)) {
                 return p;
@@ -152,9 +152,14 @@ public final class IFNPressureModel {
             this.incompleteNetwork = incompleteNetwork;
         }
 
-        public static NetworkLimits of(int baseCapacity, int accumulatorCapacity, int totalCapacity, float maxPressureBar,
-            boolean incompleteNetwork) {
-            return new NetworkLimits(baseCapacity, accumulatorCapacity, totalCapacity, maxPressureBar, incompleteNetwork);
+        public static NetworkLimits of(int baseCapacity, int accumulatorCapacity, int totalCapacity,
+            float maxPressureBar, boolean incompleteNetwork) {
+            return new NetworkLimits(
+                baseCapacity,
+                accumulatorCapacity,
+                totalCapacity,
+                maxPressureBar,
+                incompleteNetwork);
         }
     }
 

@@ -37,7 +37,9 @@ public final class IFNStateDistributor {
             total == null ? EnergyAmount.ZERO : total.internalEnergy(),
             weights);
         IFNCanonicalState[] shares = new IFNCanonicalState[substanceShares.length];
-        String fluidId = total == null ? null : total.fluidId().orElse(null);
+        String fluidId = total == null ? null
+            : total.fluidId()
+                .orElse(null);
         for (int i = 0; i < shares.length; i++) {
             shares[i] = IFNCanonicalState.of(fluidId, substanceShares[i], energyShares[i]);
         }
@@ -50,7 +52,7 @@ public final class IFNStateDistributor {
         }
 
         long[] shares = new long[weights.length];
-        if (total <= 0L || weights.length == 0) {
+        if (total == 0L || weights.length == 0) {
             return shares;
         }
 
@@ -76,12 +78,12 @@ public final class IFNStateDistributor {
                 BigInteger weightedTotal = totalValue.multiply(BigInteger.valueOf(weights[i]));
                 BigInteger[] quotientAndRemainder = weightedTotal.divideAndRemainder(weightSum);
                 shares[i] = quotientAndRemainder[0].longValueExact();
-                remainders[i] = quotientAndRemainder[1];
+                remainders[i] = quotientAndRemainder[1].abs();
                 allocated += shares[i];
             }
         }
         long remainderToAssign = total - allocated;
-        if (remainderToAssign <= 0L) {
+        if (remainderToAssign == 0L) {
             return shares;
         }
 
@@ -94,13 +96,14 @@ public final class IFNStateDistributor {
             return remainderOrder != 0 ? remainderOrder : Integer.compare(left, right);
         });
 
+        int sign = Long.signum(total);
         for (int index : indexesByRemainder) {
             if (remainderToAssign == 0L) {
                 break;
             }
             if (weights[index] > 0L && remainders[index].signum() > 0) {
-                shares[index]++;
-                remainderToAssign--;
+                shares[index] += sign;
+                remainderToAssign -= sign;
             }
         }
         return shares;

@@ -14,7 +14,6 @@ import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
-import net.minecraftforge.fluids.FluidTankInfo;
 import net.minecraftforge.fluids.IFluidHandler;
 
 import gregtech.api.enums.Dyes;
@@ -22,11 +21,7 @@ import gregtech.api.interfaces.ITexture;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.implementations.MTEHatch;
-import gregtech.api.metatileentity.implementations.integratedfluid.FluidThermalProperties;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNAmbientTemperature;
-import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidThermoModel;
 import gregtech.api.render.TextureFactory;
-import gregtech.api.util.GTUtility;
 import mcp.mobius.waila.api.IWailaConfigHandler;
 import mcp.mobius.waila.api.IWailaDataAccessor;
 
@@ -38,6 +33,7 @@ import mcp.mobius.waila.api.IWailaDataAccessor;
 public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegratedFluidMember, IFluidHandler {
 
     static final float MAX_INJECTOR_NETWORK_PRESSURE_BAR = IFNPressurePolicy.INJECTOR_TARGET_PRESSURE_BAR;
+
     public enum InjectMode {
         INJECT_CONSERVED_AMOUNT,
         INJECT_REAL_PIPE_VOLUME
@@ -46,7 +42,6 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
     private IntegratedFluidNetwork network;
     private java.util.UUID networkId;
     private InjectMode injectMode = InjectMode.INJECT_REAL_PIPE_VOLUME;
-    private double amountRemainderMb = 0.0d;
 
     public MTEIntegratedFluidInjectorHatch(int aID, String aName, String aNameRegional, int aTier) {
         super(
@@ -156,7 +151,6 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
             }
         }
     }
-
 
     @Override
     public boolean allowPullStack(IGregTechTileEntity aBaseMetaTileEntity, int aIndex, ForgeDirection side,
@@ -284,62 +278,42 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
 
             double pInBar = 1.0d;
             float ambientK = IFNAmbientTemperature.getAmbientTemperature(getBaseMetaTileEntity().getWorld());
-            double hSpecIn = FluidThermalProperties.getSpecificEnthalpyFromPT(
-                resource.getFluid(),
-                pInBar,
-                ambientK
-            );
+            double hSpecIn = FluidThermalProperties.getSpecificEnthalpyFromPT(resource.getFluid(), pInBar, ambientK);
             double vFactor = IntegratedFluidThermoModel
                 .specificVolumeFromPressureAndSpecificEnthalpy(resource.getFluid(), (float) pInBar, hSpecIn);
-            if (vFactor <= 0.0d) {
+            if (!Double.isFinite(vFactor) || vFactor <= 0.0d) {
                 return 0;
             }
 
-            double vRealMb = resource.amount;
-            double baseExact = injectMode == InjectMode.INJECT_REAL_PIPE_VOLUME
-                ? (vRealMb / vFactor)
-                : vRealMb;
-            double exact = baseExact + amountRemainderMb;
-            long addAmountMb = (long) Math.floor(exact);
-            double nextRemainder = exact - addAmountMb;
-            if (addAmountMb <= 0L) {
-                if (doFill) {
-                    amountRemainderMb = nextRemainder;
-                }
+            double amountQPerSourceUnit = IntegratedFluidNetwork.AMOUNT_SCALE
+                / (injectMode == InjectMode.INJECT_REAL_PIPE_VOLUME ? vFactor : 1.0d);
+            long maxCandidateAmountQ = (long) Math.floor(resource.amount * amountQPerSourceUnit);
+            if (maxCandidateAmountQ <= 0L) {
                 return 0;
             }
 
-            long maxCandidateAmountQ = toAmountQ(addAmountMb);
             long acceptedAmountQ = network.getMaxAddableAmountQ(resource.getFluid(), hSpecIn, maxCandidateAmountQ);
-            acceptedAmountQ = clampAcceptedPhysicalAddToInjectorPressure(network, resource.getFluid(), hSpecIn, acceptedAmountQ);
-            long acceptedAmountMb = acceptedAmountQ / IntegratedFluidNetwork.AMOUNT_SCALE;
-            if (acceptedAmountMb <= 0L) {
-                if (doFill) {
-                    amountRemainderMb = nextRemainder;
-                }
+            acceptedAmountQ = clampAcceptedPhysicalAddToInjectorPressure(
+                network,
+                resource.getFluid(),
+                hSpecIn,
+                acceptedAmountQ);
+
+            // Only credit material paid for by the whole source units returned to Forge.
+            int consumedSourceUnits = acceptedAmountQ == maxCandidateAmountQ ? resource.amount
+                : (int) Math.min(resource.amount, Math.floor(acceptedAmountQ / amountQPerSourceUnit));
+            long transferredAmountQ = (long) Math.floor(consumedSourceUnits * amountQPerSourceUnit);
+            if (consumedSourceUnits <= 0 || transferredAmountQ <= 0L) {
                 return 0;
             }
 
             if (doFill) {
-                long acceptedWholeAmountQ = toAmountQ(acceptedAmountMb);
-                long acceptedEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(hSpecIn, acceptedWholeAmountQ);
-                network.add(resource.getFluid(), acceptedWholeAmountQ, acceptedEnthalpyQ);
-                if (acceptedAmountMb < addAmountMb) {
-                    amountRemainderMb = nextRemainder + (addAmountMb - acceptedAmountMb);
-                } else {
-                    amountRemainderMb = nextRemainder;
-                }
-            }
-
-            if (injectMode == InjectMode.INJECT_REAL_PIPE_VOLUME) {
-                long realAccepted = (long) Math.floor(acceptedAmountMb * vFactor);
-                if (realAccepted <= 0L) {
+                long transferredEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(hSpecIn, transferredAmountQ);
+                if (!network.add(resource.getFluid(), transferredAmountQ, transferredEnthalpyQ)) {
                     return 0;
                 }
-                return (int) Math.min(resource.amount, realAccepted);
             }
-
-            return (int) Math.min(resource.amount, acceptedAmountMb);
+            return consumedSourceUnits;
         }
         return 0;
     }
@@ -352,13 +326,20 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
         return IFNFluidThermalRegistry.isRegistered(fluid);
     }
 
-    static long clampAcceptedPhysicalAddToInjectorPressure(IntegratedFluidNetwork network, net.minecraftforge.fluids.Fluid fluid,
-        double incomingSpecificEnthalpy, long maxAcceptedAmountQ) {
-        if (network == null || fluid == null || maxAcceptedAmountQ < IntegratedFluidNetwork.AMOUNT_SCALE) {
+    static long clampAcceptedPhysicalAddToInjectorPressure(IntegratedFluidNetwork network,
+        net.minecraftforge.fluids.Fluid fluid, double incomingSpecificEnthalpy, long maxAcceptedAmountQ) {
+        if (network == null || fluid == null || maxAcceptedAmountQ <= 0L) {
             return 0L;
         }
 
-        long low = 0L;
+        long candidateEnthalpyQ = IntegratedFluidNetwork
+            .toEnthalpyQFromSpecific(incomingSpecificEnthalpy, maxAcceptedAmountQ);
+        if (network.predictPressureAfterAdd(fluid, maxAcceptedAmountQ, candidateEnthalpyQ)
+            <= IFNPressurePolicy.injectorCutoffPressureBar()) {
+            return maxAcceptedAmountQ;
+        }
+
+        long low = 1L;
         long high = maxAcceptedAmountQ;
         long best = 0L;
 
@@ -368,11 +349,6 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
             }
 
             long mid = (low + high) / 2L;
-            if (mid < IntegratedFluidNetwork.AMOUNT_SCALE) {
-                low = mid + 1L;
-                continue;
-            }
-
             long midEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(incomingSpecificEnthalpy, mid);
             float predictedPressure = network.predictPressureAfterAdd(fluid, mid, midEnthalpyQ);
             if (predictedPressure <= IFNPressurePolicy.injectorCutoffPressureBar()) {
@@ -391,12 +367,6 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
             this.injectMode = mode;
         }
     }
-
-    private static long toAmountQ(long amountMb) {
-        return amountMb * IntegratedFluidNetwork.AMOUNT_SCALE;
-    }
-
-    // ...existing drain methods...
 
     @Override
     public void onRemoval() {
