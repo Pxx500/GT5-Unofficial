@@ -3,12 +3,14 @@ package gregtech.api.metatileentity.implementations.integratedfluid;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.UUID;
 
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
-import net.minecraftforge.fluids.Fluid;
+import gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount;
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 import org.junit.jupiter.api.Test;
 
@@ -16,13 +18,12 @@ class IFNCanonicalStatePersistenceTest {
 
     @Test
     void persistedNetworkStateStoresCanonicalSubstanceAndEnergyOnly() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 1_000, 0, 20.0f);
-        long amountQ = 12L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = 34L * IntegratedFluidNetwork.ENTHALPY_SCALE;
+        IntegratedFluidNetwork network = new IntegratedFluidNetwork();
+        long amountQ = 12L * SubstanceAmount.SCALE;
+        long energyQ = 34L * gregtech.api.metatileentity.implementations.integratedfluid.amount.EnergyAmount.SCALE;
         UUID id = new UUID(1L, 2L);
 
-        network.addState(fluid, amountQ, enthalpyQ);
+        network.replaceCanonicalState(IFNCanonicalState.fromRaw("water", amountQ, energyQ));
 
         IntegratedFluidNetworkSavedData data = new IntegratedFluidNetworkSavedData();
         data.upsertState(id, network);
@@ -30,31 +31,33 @@ class IFNCanonicalStatePersistenceTest {
         data.writeToNBT(root);
 
         NBTTagCompound entry = onlyNetworkEntry(root);
-        assertEquals(fluid.getName(), entry.getString("FluidName"));
-        assertEquals(amountQ, entry.getLong("AmountQ"));
-        assertEquals(enthalpyQ, entry.getLong("EnthalpyQ"));
+        assertEquals("water", entry.getString("FluidName"));
+        assertEquals(amountQ, entry.getLong("MassMicroKg"));
+        assertEquals(energyQ, entry.getLong("TotalMicroEu"));
         assertFalse(entry.hasKey("Pressure"));
         assertFalse(entry.hasKey("Temperature"));
     }
 
     @Test
     void canonicalStateRoundTripsThroughSavedData() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        long amountQ = 7L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = 11L * IntegratedFluidNetwork.ENTHALPY_SCALE;
+        long amountQ = 7L * SubstanceAmount.SCALE;
+        long energyQ = 11L * gregtech.api.metatileentity.implementations.integratedfluid.amount.EnergyAmount.SCALE;
         UUID id = new UUID(3L, 4L);
         NBTTagCompound entry = new NBTTagCompound();
         entry.setLong("IdMost", id.getMostSignificantBits());
         entry.setLong("IdLeast", id.getLeastSignificantBits());
         entry.setInteger("ExpectedMembers", 5);
-        entry.setString("FluidName", fluid.getName());
-        entry.setLong("AmountQ", amountQ);
-        entry.setLong("EnthalpyQ", enthalpyQ);
+        entry.setLong("ChamberBaseLiters", 300);
+        entry.setLong("ChamberStrokeLiters", 0);
+        entry.setString("FluidName", "water");
+        entry.setLong("MassMicroKg", amountQ);
+        entry.setLong("TotalMicroEu", energyQ);
         entry.setFloat("Pressure", 123.0f);
         entry.setFloat("Temperature", 456.0f);
         NBTTagList networks = new NBTTagList();
         networks.appendTag(entry);
         NBTTagCompound root = new NBTTagCompound();
+        root.setInteger("ChamberFormat", 2);
         root.setTag("Networks", networks);
 
         IntegratedFluidNetworkSavedData data = new IntegratedFluidNetworkSavedData();
@@ -62,20 +65,19 @@ class IFNCanonicalStatePersistenceTest {
 
         IntegratedFluidNetworkSavedData.NetworkState state = data.getState(id);
         assertNotNull(state);
-        assertEquals(fluid.getName(), state.fluidName);
-        assertEquals(amountQ, state.amountQ);
-        assertEquals(enthalpyQ, state.enthalpyQ);
+        assertEquals("water", state.inventory.fluidId().get());
+        assertEquals(amountQ, state.inventory.substanceAmount().rawUnits());
+        assertEquals(energyQ, state.inventory.totalEnergy().rawUnits());
         assertEquals(5, state.expectedMemberCount);
     }
 
     @Test
-    void legacyFluidStackFieldsMigrateToCanonicalSubstanceAndEnergy() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
+    void legacySaveCannotBeUsedOrOverwritten() {
         UUID id = new UUID(5L, 6L);
         int legacyAmount = 3;
         float legacyTemperature = 330.0f;
         NBTTagCompound legacyFluid = new NBTTagCompound();
-        legacyFluid.setString("FluidName", fluid.getName());
+        legacyFluid.setString("FluidName", "water");
         legacyFluid.setInteger("Amount", legacyAmount);
         NBTTagCompound entry = new NBTTagCompound();
         entry.setLong("IdMost", id.getMostSignificantBits());
@@ -91,14 +93,8 @@ class IFNCanonicalStatePersistenceTest {
         IntegratedFluidNetworkSavedData data = new IntegratedFluidNetworkSavedData();
         data.readFromNBT(root);
 
-        IntegratedFluidNetworkSavedData.NetworkState state = data.getState(id);
-        assertNotNull(state);
-        assertEquals(fluid.getName(), state.fluidName);
-        assertEquals(legacyAmount * IntegratedFluidNetwork.AMOUNT_SCALE, state.amountQ);
-        double specific = IntegratedFluidThermoModel.specificEnthalpyFromTemperature(fluid, legacyTemperature);
-        assertEquals((long) Math.round(specific * legacyAmount * IntegratedFluidNetwork.ENTHALPY_SCALE),
-            state.enthalpyQ);
-        assertEquals(2, state.expectedMemberCount);
+        assertThrows(IllegalStateException.class, () -> data.getState(id));
+        assertThrows(IllegalStateException.class, () -> data.writeToNBT(new NBTTagCompound()));
     }
 
     private static NBTTagCompound onlyNetworkEntry(NBTTagCompound root) {

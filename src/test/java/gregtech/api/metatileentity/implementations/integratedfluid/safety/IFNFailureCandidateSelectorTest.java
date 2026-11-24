@@ -1,5 +1,6 @@
 package gregtech.api.metatileentity.implementations.integratedfluid.safety;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.util.Arrays;
@@ -11,6 +12,16 @@ import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFlu
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPipe;
 
 class IFNFailureCandidateSelectorTest {
+
+    @Test
+    void aRatedLineIsLimitedByEachExposedMemberIncludingItsOrdinaryPorts() {
+        var rated = member(true, 350, 1000);
+        var ordinary = member(true, 10, 1000);
+        var port = member(false, 10, 1000);
+        assertEquals(350, IFNOperationalLimits.fromMembers(Arrays.asList(rated)).maxPressureBar());
+        assertEquals(10, IFNOperationalLimits.fromMembers(Arrays.asList(ordinary, rated)).maxPressureBar());
+        assertEquals(10, IFNOperationalLimits.fromMembers(Arrays.asList(rated, port)).maxPressureBar());
+    }
 
     @Test
     void pressureCandidateUsesWeakestPressureDifferentialAndIgnoresNonCandidates() {

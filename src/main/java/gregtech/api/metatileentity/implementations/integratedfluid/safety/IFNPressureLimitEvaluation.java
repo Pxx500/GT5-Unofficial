@@ -16,7 +16,7 @@ public final class IFNPressureLimitEvaluation {
 
     public static IFNPressureLimitEvaluation evaluate(double pressureBar, IFNOperationalLimits limits,
         boolean incompleteNetwork) {
-        float maxPressureBar = limits.accumulatorMaxPressureBar();
+        float maxPressureBar = limits.maxPressureBar();
         if (pressureBar <= maxPressureBar) {
             return new IFNPressureLimitEvaluation(IFNPressureLimitStatus.NORMAL, pressureBar, maxPressureBar);
         }

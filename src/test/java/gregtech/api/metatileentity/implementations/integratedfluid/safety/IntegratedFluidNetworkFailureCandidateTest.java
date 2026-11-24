@@ -6,8 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Optional;
 import java.util.Random;
 
-import net.minecraftforge.fluids.Fluid;
-
 import org.junit.jupiter.api.Test;
 
 import gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSupport;
@@ -26,7 +24,7 @@ class IntegratedFluidNetworkFailureCandidateTest {
         network.addMember(hatch);
         network.addMember(strongPipe);
         network.addMember(weakPipe);
-        network.setPressure(12.0f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 12.0f);
 
         assertSame(weakPipe, network.selectFailureCandidate(network.tickOperationalSafety()).get());
     }
@@ -41,18 +39,18 @@ class IntegratedFluidNetworkFailureCandidateTest {
         network.addMember(hatch);
         network.addMember(strongPipe);
         network.addMember(weakPipe);
+        IFNTestSupport.restoreDrySteamAt475K(network, 1);
 
         assertSame(weakPipe, network.selectFailureCandidate(network.tickOperationalSafety()).get());
     }
 
     @Test
     void operationalFailureVoidsNetworkAndReturnsFailureCandidate() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = seededNetwork(fluid);
+        IntegratedFluidNetwork network = new IntegratedFluidNetwork();
         IIntegratedFluidMember pipe = member(true, 6.0f, 100.0f, 500.0f);
 
         network.addMember(pipe);
-        network.setPressure(12.0f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 12.0f);
 
         Optional<IIntegratedFluidMember> failed = network.applyOperationalFailure(fixedRandom(0.99d));
 
@@ -62,11 +60,10 @@ class IntegratedFluidNetworkFailureCandidateTest {
 
     @Test
     void safeOperationalTickDoesNotVoidNetwork() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = seededNetwork(fluid);
+        IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
         network.addMember(member(true, 6.0f, 100.0f, 500.0f));
-        network.setPressure(10.0f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 5.5f);
 
         Optional<IIntegratedFluidMember> failed = network.applyOperationalFailure(fixedRandom(0.0d));
 
@@ -99,7 +96,7 @@ class IntegratedFluidNetworkFailureCandidateTest {
 
             @Override
             public int getCapacityContribution() {
-                return 0;
+                return 100;
             }
 
             @Override
@@ -127,14 +124,6 @@ class IntegratedFluidNetworkFailureCandidateTest {
                 return maxTemperatureKelvin;
             }
         };
-    }
-
-    private static IntegratedFluidNetwork seededNetwork(Fluid fluid) {
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 100, 100, 10.0f);
-        long amountQ = 10L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(300.0d, amountQ);
-        network.addState(fluid, amountQ, enthalpyQ);
-        return network;
     }
 
     private static Random fixedRandom(double value) {

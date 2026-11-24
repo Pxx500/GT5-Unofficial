@@ -11,6 +11,33 @@ import org.junit.jupiter.api.Test;
 class ClosedFluidChamberHeatExchangeTest {
 
     @Test
+    void oneGramOfVaporCannotBuyAFractionOfAnElectricalEuAtTheTemperatureCeiling() {
+        var vapor = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("0.001"), 1.0, new BigDecimal("2203.7935"));
+        assertEquals(450, vapor.state().temperatureKelvin(), 1e-8);
+        assertThrows(PureFluid.UnsupportedStateException.class, () -> vapor.withHeat(BigDecimal.valueOf(2560)));
+        var heated = vapor.heatByUpTo(2560);
+        // 1 g of dilute steam at 1548.5 EU/(kg K) can take 851.675 EU before reaching 1000 K
+        assertEquals(851L, heated.totalEnergyEu().subtract(vapor.totalEnergyEu()).longValueExact());
+        assertTrue(heated.state().temperatureKelvin() > 999 && heated.state().temperatureKelvin() < 1000);
+        assertEquals(heated.totalEnergyEu(), heated.heatByUpTo(2560).totalEnergyEu());
+    }
+
+    @Test
+    void meteredContactApproachesEquilibriumFromEitherSideOnTheGameLedger() {
+        var hot = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("0.000001"), 0.001, new BigDecimal("2.203794"));
+        var cold = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("0.000002"), 0.002, new BigDecimal("4.252737"));
+        var forward = hot.conductHeat(cold, 20);
+        var reverse = cold.conductHeat(hot, 20);
+        long microEu = forward.heatToFirstEu().negate().movePointRight(6).longValueExact();
+        assertTrue(microEu > 51_000 && microEu < 52_000);
+        assertEquals(microEu, reverse.heatToFirstEu().movePointRight(6).longValueExact());
+        assertEquals(microEu, hot.totalEnergyEu().subtract(forward.first().totalEnergyEu()).movePointRight(6).longValueExact());
+        assertEquals(microEu, forward.second().totalEnergyEu().subtract(cold.totalEnergyEu()).movePointRight(6).longValueExact());
+        assertTrue(forward.first().state().temperatureKelvin() >= forward.second().state().temperatureKelvin());
+        assertEquals(0, forward.first().conductHeat(forward.second(), 20).heatToFirstEu().signum());
+    }
+
+    @Test
     void veryUnequalMassesDoNotAmplifyTheEquilibriumMargin() {
         for (double hotMass : new double[] { 1e-9, 1e12 }) {
             double coldMass = hotMass == 1e-9 ? 1e12 : 1e-9;

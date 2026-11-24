@@ -13,6 +13,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.WeakHashMap;
+import java.util.function.Predicate;
 
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.world.World;
@@ -23,11 +24,10 @@ import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.MetaPipeEntity;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNNetworkSafetyTicker;
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
-import gregtech.api.metatileentity.implementations.integratedfluid.thermal.IFNAmbientContext;
-import gregtech.api.metatileentity.implementations.integratedfluid.thermal.IFNHeatExchangeRuntime;
 import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNMergePolicy;
 import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNStateDistributor;
 import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNTopologyRebuilder;
+import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNTopologySnapshot;
 
 /**
  * Centralized network manager for integrated fluid networks.
@@ -46,6 +46,7 @@ public class NetworkManager {
     private final Random safetyRandom;
 
     // Track last tick time for heat loss application
+    static final int AMBIENT_STEP_TICKS = 20;
     private long lastHeatLossTick = 0;
 
     private NetworkManager(World world) {
@@ -90,13 +91,28 @@ public class NetworkManager {
      */
     public void onMemberAdded(IIntegratedFluidMember member) {
         if (member == null) return;
+        UUID savedId = member.getNetworkId();
+        if (savedId != null && savedData.getState(savedId) != null) {
+            var returning = getOrCreateNetwork(savedId);
+            if (returning.isPending()) {
+                returning.resumeMember(member);
+                if (!returning.isPending()) {
+                    var components = findConnectedComponents(new ArrayList<>(returning.getMembers()));
+                    if (components.size() > 1) rebuildComponents(java.util.Collections.singleton(returning), components);
+                }
+                return;
+            }
+        }
 
         Set<IIntegratedFluidMember> component = new HashSet<>();
-        floodFill(member, component, new HashSet<>());
+        floodFill(member, component, new HashSet<IIntegratedFluidMember>()::add);
         if (component.isEmpty()) {
             component.add(member);
         }
 
+        for (var candidate : component) {
+            if (candidate.getNetwork() != null && candidate.getNetwork().isPending()) return;
+        }
         UUID targetId = chooseNetworkId(member, component);
         IntegratedFluidNetwork mainNetwork = getOrCreateNetwork(targetId);
 
@@ -108,9 +124,7 @@ public class NetworkManager {
             }
         }
 
-        if (!networksToMerge.isEmpty()) {
-            mergeIntoNetwork(mainNetwork, networksToMerge);
-        }
+        if (!networksToMerge.isEmpty() && !mergeIntoNetwork(mainNetwork, networksToMerge)) return;
 
         for (IIntegratedFluidMember componentMember : component) {
             addToNetwork(componentMember, mainNetwork);
@@ -130,43 +144,74 @@ public class NetworkManager {
      * This will split the network if necessary.
      */
     public void onMemberRemoved(IIntegratedFluidMember member) {
+        detach(member, false);
+    }
+
+    public static void onChunkUnload(net.minecraft.world.chunk.Chunk chunk) {
+        NetworkManager manager = INSTANCES.get(chunk.worldObj);
+        if (manager == null || chunk.worldObj.isRemote) return;
+        for (Object tile : chunk.chunkTileEntityMap.values()) {
+            if (tile instanceof IGregTechTileEntity gt && gt.getMetaTileEntity() instanceof IIntegratedFluidMember member
+                && member.getNetwork() != null) {
+                var network = member.getNetwork();
+                network.suspendMember(member);
+                if (network.getMemberCount() == 0) {
+                    manager.allNetworks.remove(network);
+                    network.setSavedData(null);
+                }
+            }
+        }
+    }
+
+    static void onBlockDestroyed(IIntegratedFluidMember member, IGregTechTileEntity tile) {
+        if (tile != null && tile.isServerSide() && member.getNetwork() != null) {
+            getInstance(tile.getWorld()).detach(member, true);
+        }
+    }
+
+    private void detach(IIntegratedFluidMember member, boolean destroyed) {
         if (member == null) return;
 
         IntegratedFluidNetwork oldNetwork = member.getNetwork();
         if (oldNetwork == null) return;
-
-        oldNetwork.removeMember(member);
-        member.setNetwork(null);
-        member.setNetworkId(null);
-
-        if (oldNetwork.getMemberCount() == 0) {
-            removeNetwork(oldNetwork);
+        if (destroyed && oldNetwork.isPending()) {
+            oldNetwork.destroyWhileIncomplete(member);
             return;
         }
 
         List<IIntegratedFluidMember> remainingMembers = new ArrayList<>(oldNetwork.getMembers());
+        if (!remainingMembers.remove(member)) return;
         if (remainingMembers.isEmpty()) {
+            oldNetwork.removeMember(member, IFNCanonicalState.empty());
+            member.setNetworkId(null);
             removeNetwork(oldNetwork);
             return;
         }
 
+        // During breakBlock the destroyed tile can still be found through the world
         List<Set<IIntegratedFluidMember>> components = findConnectedComponents(remainingMembers);
-
+        IFNCanonicalState[] splitStates;
+        if (destroyed && oldNetwork.hasSolvedFluid()) {
+            splitStates = new IFNCanonicalState[components.size()];
+            for (int i = 0; i < components.size(); i++) {
+                splitStates[i] = oldNetwork.inventoryIn(IFNTopologySnapshot.fromMembers(components.get(i), 0));
+            }
+        } else if (components.size() == 1) {
+            splitStates = new IFNCanonicalState[] { oldNetwork.getCanonicalState() };
+        } else {
+            splitStates = IFNStateDistributor.splitStateByWeights(oldNetwork.getCanonicalState(), componentCapacityWeights(components));
+        }
+        oldNetwork.removeMember(member, components.size() == 1 ? splitStates[0] : IFNCanonicalState.empty());
+        member.setNetworkId(null);
         if (components.size() == 1) {
             oldNetwork.setExpectedMemberCount(oldNetwork.getMemberCount());
             oldNetwork.setPending(false);
-            oldNetwork.capFluidToCapacity();
             persistNetwork(oldNetwork);
             for (IIntegratedFluidMember remainingMember : remainingMembers) {
                 remainingMember.onNetworkUpdate();
             }
             return;
         }
-
-        IFNCanonicalState oldState = oldNetwork.getCanonicalState();
-        IFNCanonicalState[] splitStates = IFNStateDistributor.splitStateByWeights(
-            oldState,
-            componentCapacityWeights(components));
 
         for (IIntegratedFluidMember remainingMember : remainingMembers) {
             oldNetwork.removeMember(remainingMember);
@@ -194,7 +239,6 @@ public class NetworkManager {
 
             newNetwork.setExpectedMemberCount(newNetwork.getMemberCount());
             newNetwork.setPending(false);
-            newNetwork.capFluidToCapacity();
             persistNetwork(newNetwork);
 
             for (IIntegratedFluidMember componentMember : component) {
@@ -236,22 +280,36 @@ public class NetworkManager {
             }
         }
 
-        if (freezeIfIncompatibleNetworks(affectedNetworks)) {
-            return;
+        for (var network : affectedNetworks) {
+            if (network.isPending()) return;
         }
+        rebuildComponents(affectedNetworks, findConnectedComponents(new ArrayList<>(allAffectedMembers)));
+    }
+
+    private void rebuildComponents(Set<IntegratedFluidNetwork> affectedNetworks, List<Set<IIntegratedFluidMember>> components) {
+        var combinedState = combineOrFreeze(affectedNetworks);
+        if (combinedState == null) return;
 
         String inheritedFrozenReason = frozenReasonOf(affectedNetworks);
-        IFNCanonicalState combinedState = IFNCanonicalState.empty();
         UUID splitPrimaryId = null;
         if (affectedNetworks.size() == 1) {
             IntegratedFluidNetwork only = affectedNetworks.iterator().next();
             splitPrimaryId = only != null ? only.getNetworkId() : null;
         }
 
-        for (IntegratedFluidNetwork net : affectedNetworks) {
-            combinedState = IFNMergePolicy.merge(combinedState, net.getCanonicalState());
+        IFNCanonicalState[] splitStates = null;
+        if (affectedNetworks.size() == 1 && components.size() > 1) {
+            var original = affectedNetworks.iterator().next();
+            if (original.hasSolvedFluid()) {
+                splitStates = new IFNCanonicalState[components.size()];
+                for (int i = 0; i < components.size(); i++) {
+                    splitStates[i] = original.inventoryIn(IFNTopologySnapshot.fromMembers(components.get(i), 0));
+                }
+            }
         }
-
+        if (splitStates == null) {
+            splitStates = IFNStateDistributor.splitStateByWeights(combinedState, componentCapacityWeights(components));
+        }
         for (IntegratedFluidNetwork net : affectedNetworks) {
             for (IIntegratedFluidMember m : new ArrayList<>(net.getMembers())) {
                 net.removeMember(m);
@@ -260,7 +318,6 @@ public class NetworkManager {
             removeNetwork(net);
         }
 
-        List<Set<IIntegratedFluidMember>> components = findConnectedComponents(new ArrayList<>(allAffectedMembers));
         boolean isMerge = components.size() == 1 && affectedNetworks.size() > 1;
         Set<IIntegratedFluidMember> primaryComponent = null;
         if (!isMerge && components.size() > 1) {
@@ -268,10 +325,6 @@ public class NetworkManager {
                 .max(Comparator.comparingInt(Set::size))
                 .orElse(null);
         }
-
-        IFNCanonicalState[] splitStates = IFNStateDistributor.splitStateByWeights(
-            combinedState,
-            componentCapacityWeights(components));
 
         for (int componentIndex = 0; componentIndex < components.size(); componentIndex++) {
             Set<IIntegratedFluidMember> component = components.get(componentIndex);
@@ -298,7 +351,6 @@ public class NetworkManager {
 
             newNetwork.setExpectedMemberCount(newNetwork.getMemberCount());
             newNetwork.setPending(false);
-            newNetwork.capFluidToCapacity();
             if (inheritedFrozenReason != null) {
                 newNetwork.freeze(inheritedFrozenReason);
             }
@@ -331,15 +383,14 @@ public class NetworkManager {
         tickOperationalSafety();
 
         // Apply heat loss every 20 ticks (1 second)
-        if (worldTick - lastHeatLossTick >= 20) {
+        if (worldTick - lastHeatLossTick >= AMBIENT_STEP_TICKS) {
             lastHeatLossTick = worldTick;
 
             // Apply heat loss to all networks
-            IFNAmbientContext ambientContext = IFNAmbientContext.forWorld(world);
+            float ambientKelvin = IFNAmbientTemperature.getAmbientTemperature(world);
             for (IntegratedFluidNetwork network : new HashSet<>(allNetworks)) {
-                if (network != null) {
-                    IFNHeatExchangeRuntime.apply(network, ambientContext);
-                    persistNetwork(network);
+                if (network != null && !network.isPending()) {
+                    network.exchangeAmbientHeat(ambientKelvin, worldTick, AMBIENT_STEP_TICKS);
                 }
             }
         }
@@ -359,7 +410,6 @@ public class NetworkManager {
             if (baseTile != null) {
                 World pipeWorld = baseTile.getWorld();
                 if (pipeWorld != null && !pipeWorld.isRemote) {
-                    onMemberRemoved(member);
                     pipeWorld.setBlockToAir(baseTile.getXCoord(), baseTile.getYCoord(), baseTile.getZCoord());
                     return;
                 }
@@ -475,14 +525,14 @@ public class NetworkManager {
      * Finds all connected components using flood-fill algorithm.
      */
     private List<Set<IIntegratedFluidMember>> findConnectedComponents(List<IIntegratedFluidMember> members) {
+        Set<IIntegratedFluidMember> remaining = new HashSet<>(members);
         List<Set<IIntegratedFluidMember>> components = new ArrayList<>();
-        Set<IIntegratedFluidMember> visited = new HashSet<>();
 
         for (IIntegratedFluidMember member : members) {
-            if (visited.contains(member)) continue;
+            if (!remaining.contains(member)) continue;
 
             Set<IIntegratedFluidMember> component = new HashSet<>();
-            floodFill(member, component, visited);
+            floodFill(member, component, remaining::remove);
 
             if (!component.isEmpty()) {
                 components.add(component);
@@ -495,10 +545,11 @@ public class NetworkManager {
     /**
      * Flood-fill algorithm to find all connected members.
      */
-    private void floodFill(IIntegratedFluidMember start, Set<IIntegratedFluidMember> component, Set<IIntegratedFluidMember> visited) {
+    private void floodFill(IIntegratedFluidMember start, Set<IIntegratedFluidMember> component,
+        Predicate<IIntegratedFluidMember> visit) {
         Queue<IIntegratedFluidMember> queue = new LinkedList<>();
         queue.add(start);
-        visited.add(start);
+        visit.test(start);
 
         while (!queue.isEmpty()) {
             IIntegratedFluidMember current = queue.poll();
@@ -506,8 +557,7 @@ public class NetworkManager {
 
             List<IIntegratedFluidMember> neighbors = findConnectedNeighbors(current);
             for (IIntegratedFluidMember neighbor : neighbors) {
-                if (!visited.contains(neighbor)) {
-                    visited.add(neighbor);
+                if (visit.test(neighbor)) {
                     queue.add(neighbor);
                 }
             }
@@ -519,6 +569,7 @@ public class NetworkManager {
      */
     private IntegratedFluidNetwork createEmptyNetwork(UUID networkId) {
         IntegratedFluidNetwork network = newNetwork(networkId);
+        network.setSavedData(savedData);
         allNetworks.add(network);
         return network;
     }
@@ -529,17 +580,7 @@ public class NetworkManager {
 
     private IntegratedFluidNetwork createNewNetwork(UUID networkId) {
         IntegratedFluidNetwork network = createEmptyNetwork(networkId);
-        IntegratedFluidNetworkSavedData.NetworkState state = savedData.getState(network.getNetworkId());
-        if (state != null) {
-            network.loadState(
-                state.fluidName,
-                state.amountQ,
-                state.enthalpyQ,
-                IntegratedFluidNetwork.DEFAULT_PRESSURE,
-                state.expectedMemberCount,
-                state.frozenReason
-            );
-        }
+        savedData.restoreInto(network);
         return network;
     }
 
@@ -563,6 +604,7 @@ public class NetworkManager {
     private void removeNetwork(IntegratedFluidNetwork network) {
         if (network == null) return;
         allNetworks.remove(network);
+        network.setSavedData(null);
         savedData.removeState(network.getNetworkId());
     }
 
@@ -630,24 +672,17 @@ public class NetworkManager {
         }
     }
 
-    boolean freezeIfIncompatibleNetworks(Set<IntegratedFluidNetwork> networks) {
-        if (networks == null || networks.size() <= 1) {
-            return false;
+    private IFNCanonicalState combineOrFreeze(Set<IntegratedFluidNetwork> networks) {
+        var inventories = new ArrayList<IFNCanonicalState>(networks.size());
+        for (var network : networks) inventories.add(network.getCanonicalState());
+        try {
+            return IFNMergePolicy.merge(inventories);
+        } catch (ArithmeticException overflow) {
+            freezeNetworks(networks, "Combined inventory exceeds ledger range");
+        } catch (IllegalArgumentException conflict) {
+            freezeNetworks(networks, "fluid conflict");
         }
-
-        IFNCanonicalState mergedState = IFNCanonicalState.empty();
-        for (IntegratedFluidNetwork network : networks) {
-            if (network == null) {
-                continue;
-            }
-            IFNCanonicalState nextState = network.getCanonicalState();
-            if (!IFNMergePolicy.canMerge(mergedState, nextState)) {
-                freezeNetworks(networks, "fluid conflict");
-                return true;
-            }
-            mergedState = IFNMergePolicy.merge(mergedState, nextState);
-        }
-        return false;
+        return null;
     }
 
     private void freezeNetworks(Set<IntegratedFluidNetwork> networks, String reason) {
@@ -666,22 +701,15 @@ public class NetworkManager {
     /**
      * Merges multiple networks into the target network.
      */
-    void mergeIntoNetwork(IntegratedFluidNetwork mainNetwork, Set<IntegratedFluidNetwork> networks) {
-        if (mainNetwork == null || networks.isEmpty()) return;
-
-        for (IntegratedFluidNetwork network : networks) {
-            if (network == null || network == mainNetwork) continue;
-            if (!IFNMergePolicy.canMerge(mainNetwork.getCanonicalState(), network.getCanonicalState())) {
-                mainNetwork.merge(network);
-                persistNetwork(network);
-                for (IIntegratedFluidMember member : network.getMembers()) {
-                    member.onNetworkUpdate();
-                }
-                continue;
-            }
-            mainNetwork.merge(network);
-            removeNetwork(network);
-        }
+    boolean mergeIntoNetwork(IntegratedFluidNetwork mainNetwork, Set<IntegratedFluidNetwork> donors) {
+        var participants = new HashSet<>(donors);
+        participants.add(mainNetwork);
+        var inventory = combineOrFreeze(participants);
+        if (inventory == null) return false;
+        var frozen = frozenReasonOf(participants);
+        mainNetwork.absorb(participants, inventory);
+        for (var donor : participants) if (donor != mainNetwork) removeNetwork(donor);
+        if (frozen != null) mainNetwork.freeze(frozen);
 
         ensureExpectedCount(mainNetwork);
         updatePending(mainNetwork);
@@ -690,6 +718,7 @@ public class NetworkManager {
         for (IIntegratedFluidMember member : mainNetwork.getMembers()) {
             member.onNetworkUpdate();
         }
+        return true;
     }
 
     /**
@@ -697,6 +726,7 @@ public class NetworkManager {
      */
     public void cleanup() {
         for (IntegratedFluidNetwork network : new HashSet<>(allNetworks)) {
+            network.setSavedData(null);
             network.clear();
         }
         allNetworks.clear();

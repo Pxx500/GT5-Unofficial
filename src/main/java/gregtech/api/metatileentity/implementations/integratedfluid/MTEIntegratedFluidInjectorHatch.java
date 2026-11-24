@@ -13,6 +13,7 @@ import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.IFluidHandler;
 
@@ -32,16 +33,8 @@ import mcp.mobius.waila.api.IWailaDataAccessor;
  */
 public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegratedFluidMember, IFluidHandler {
 
-    static final float MAX_INJECTOR_NETWORK_PRESSURE_BAR = IFNPressurePolicy.INJECTOR_TARGET_PRESSURE_BAR;
-
-    public enum InjectMode {
-        INJECT_CONSERVED_AMOUNT,
-        INJECT_REAL_PIPE_VOLUME
-    }
-
     private IntegratedFluidNetwork network;
     private java.util.UUID networkId;
-    private InjectMode injectMode = InjectMode.INJECT_REAL_PIPE_VOLUME;
 
     public MTEIntegratedFluidInjectorHatch(int aID, String aName, String aNameRegional, int aTier) {
         super(
@@ -51,8 +44,9 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
             aTier,
             0, // No inventory slots
             new String[] { "Integrated Fluid Injector Hatch", "Bridges GT Fluid Pipes with Integrated Fluid Network",
-                "Accepts fluid from GT pipes and injects into network", "Injector hatch does not add network capacity",
-                "Only works at 1.00 bar pressure" });
+                "Accepts supported untagged fluids at local ambient temperature", "GT steam enters as saturated vapor at 100 C",
+                "Injector hatch does not add network capacity",
+                "Fills the network up to 0.90 bar" });
     }
 
     public MTEIntegratedFluidInjectorHatch(String aName, int aTier, String[] aDescription, ITexture[][][] aTextures) {
@@ -168,23 +162,7 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
     public void getWailaNBTData(EntityPlayerMP player, TileEntity tile, NBTTagCompound tag, World world, int x, int y,
         int z) {
         super.getWailaNBTData(player, tile, tag, world, x, y, z);
-        // Send network data to client for WAILA display
-        if (network != null) {
-            tag.setBoolean("hasNetwork", true);
-            IFNWailaFormatter.writeNetworkStatus(network, tag);
-            tag.setInteger("memberCount", network.getMemberCount());
-            tag.setInteger("maxCapacity", network.getMaxCapacity());
-            tag.setInteger("accumulatorCapacity", network.getAccumulatorCapacity());
-            tag.setInteger("totalCapacity", network.getTotalCapacity());
-            tag.setFloat("pressure", network.getPressure());
-            tag.setFloat("temperature", network.getTemperature());
-            FluidStack fluid = network.getStoredFluid();
-            if (fluid != null) {
-                tag.setTag("networkFluid", fluid.writeToNBT(new NBTTagCompound()));
-            }
-        } else {
-            tag.setBoolean("hasNetwork", false);
-        }
+        IFNWailaFormatter.writeNetworkStatus(network, tag);
     }
 
     @Override
@@ -197,21 +175,11 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
             IFNWailaFormatter.addFluidStorageSummary(tag, currenttip, "Network Fluid", false);
             currenttip.add("Network Members: " + tag.getInteger("memberCount"));
             float pressure = tag.getFloat("pressure");
-            currenttip.add(
-                "Pressure: " + EnumChatFormatting.YELLOW
-                    + String.format("%.2f", pressure)
-                    + " bar"
-                    + EnumChatFormatting.RESET);
-            // Add warning if pressure is above 1 bar (injector won't inject above 1 bar)
-            if (pressure > 1.01f) {
+            IFNWailaFormatter.addOperatingConditions(tag, currenttip);
+            if (pressure >= IFNPressurePolicy.injectorCutoffPressureBar()) {
                 currenttip.add(
-                    EnumChatFormatting.RED + "WARNING: Injector only works up to 1.00 bar!" + EnumChatFormatting.RESET);
+                    EnumChatFormatting.RED + "Intake closed at 0.90 bar" + EnumChatFormatting.RESET);
             }
-            currenttip.add(
-                "Temperature: " + EnumChatFormatting.RED
-                    + String.format("%.1f", tag.getFloat("temperature"))
-                    + " K"
-                    + EnumChatFormatting.RESET);
         } else {
             currenttip.add(EnumChatFormatting.RED + "No network connected" + EnumChatFormatting.RESET);
         }
@@ -241,11 +209,6 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
 
     @Override
     public void onNetworkUpdate() {
-        // IMPORTANT: Cap fluid to capacity whenever network is updated
-        if (network != null) {
-            network.capFluidToCapacity();
-        }
-        // Trigger visual updates
         if (getBaseMetaTileEntity() != null) {
             getBaseMetaTileEntity().issueTextureUpdate();
         }
@@ -261,111 +224,22 @@ public class MTEIntegratedFluidInjectorHatch extends MTEHatch implements IIntegr
 
     @Override
     public int fill(ForgeDirection from, FluidStack resource, boolean doFill) {
+        return fill(resource, doFill);
+    }
+
+    @Override
+    public int fill(FluidStack resource, boolean doFill) {
         if (network == null) {
             NetworkManager manager = NetworkManager.getInstance(getBaseMetaTileEntity().getWorld());
             manager.onMemberAdded(this);
         }
-        if (network != null && resource != null) {
-            if (!canInjectIntoNetwork(network)) {
-                return 0;
-            }
-            if (resource.amount <= 0 || resource.getFluid() == null) {
-                return 0;
-            }
-            if (!canInjectFluid(resource.getFluid())) {
-                return 0;
-            }
-
-            double pInBar = 1.0d;
-            float ambientK = IFNAmbientTemperature.getAmbientTemperature(getBaseMetaTileEntity().getWorld());
-            double hSpecIn = FluidThermalProperties.getSpecificEnthalpyFromPT(resource.getFluid(), pInBar, ambientK);
-            double vFactor = IntegratedFluidThermoModel
-                .specificVolumeFromPressureAndSpecificEnthalpy(resource.getFluid(), (float) pInBar, hSpecIn);
-            if (!Double.isFinite(vFactor) || vFactor <= 0.0d) {
-                return 0;
-            }
-
-            double amountQPerSourceUnit = IntegratedFluidNetwork.AMOUNT_SCALE
-                / (injectMode == InjectMode.INJECT_REAL_PIPE_VOLUME ? vFactor : 1.0d);
-            long maxCandidateAmountQ = (long) Math.floor(resource.amount * amountQPerSourceUnit);
-            if (maxCandidateAmountQ <= 0L) {
-                return 0;
-            }
-
-            long acceptedAmountQ = network.getMaxAddableAmountQ(resource.getFluid(), hSpecIn, maxCandidateAmountQ);
-            acceptedAmountQ = clampAcceptedPhysicalAddToInjectorPressure(
-                network,
-                resource.getFluid(),
-                hSpecIn,
-                acceptedAmountQ);
-
-            // Only credit material paid for by the whole source units returned to Forge.
-            int consumedSourceUnits = acceptedAmountQ == maxCandidateAmountQ ? resource.amount
-                : (int) Math.min(resource.amount, Math.floor(acceptedAmountQ / amountQPerSourceUnit));
-            long transferredAmountQ = (long) Math.floor(consumedSourceUnits * amountQPerSourceUnit);
-            if (consumedSourceUnits <= 0 || transferredAmountQ <= 0L) {
-                return 0;
-            }
-
-            if (doFill) {
-                long transferredEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(hSpecIn, transferredAmountQ);
-                if (!network.add(resource.getFluid(), transferredAmountQ, transferredEnthalpyQ)) {
-                    return 0;
-                }
-            }
-            return consumedSourceUnits;
-        }
-        return 0;
+        return network == null ? 0 : network.admit(resource, doFill, IFNAmbientTemperature.atPort(getBaseMetaTileEntity()));
     }
 
-    static boolean canInjectIntoNetwork(IntegratedFluidNetwork network) {
-        return IFNNetworkTransferGate.canInjectFromGtPipe(network);
-    }
-
-    static boolean canInjectFluid(net.minecraftforge.fluids.Fluid fluid) {
-        return IFNFluidThermalRegistry.isRegistered(fluid);
-    }
-
-    static long clampAcceptedPhysicalAddToInjectorPressure(IntegratedFluidNetwork network,
-        net.minecraftforge.fluids.Fluid fluid, double incomingSpecificEnthalpy, long maxAcceptedAmountQ) {
-        if (network == null || fluid == null || maxAcceptedAmountQ <= 0L) {
-            return 0L;
-        }
-
-        long candidateEnthalpyQ = IntegratedFluidNetwork
-            .toEnthalpyQFromSpecific(incomingSpecificEnthalpy, maxAcceptedAmountQ);
-        if (network.predictPressureAfterAdd(fluid, maxAcceptedAmountQ, candidateEnthalpyQ)
-            <= IFNPressurePolicy.injectorCutoffPressureBar()) {
-            return maxAcceptedAmountQ;
-        }
-
-        long low = 1L;
-        long high = maxAcceptedAmountQ;
-        long best = 0L;
-
-        for (int i = 0; i < IFNPressurePolicy.TRANSFER_SEARCH_ITERATIONS; i++) {
-            if (low > high) {
-                break;
-            }
-
-            long mid = (low + high) / 2L;
-            long midEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(incomingSpecificEnthalpy, mid);
-            float predictedPressure = network.predictPressureAfterAdd(fluid, mid, midEnthalpyQ);
-            if (predictedPressure <= IFNPressurePolicy.injectorCutoffPressureBar()) {
-                best = mid;
-                low = mid + 1L;
-            } else {
-                high = mid - 1L;
-            }
-        }
-
-        return best;
-    }
-
-    public void setInjectMode(InjectMode mode) {
-        if (mode != null) {
-            this.injectMode = mode;
-        }
+    @Override
+    public void onBlockDestroyed() {
+        NetworkManager.onBlockDestroyed(this, getBaseMetaTileEntity());
+        super.onBlockDestroyed();
     }
 
     @Override

@@ -72,6 +72,32 @@ class ClosedFluidChamberTest {
     }
 
     @Test
+    void fillingAnEvacuatedLoopHeatsSteamMoreThanFillingAPrimedOne() {
+        var water = PureFluid.water();
+        var mass = new BigDecimal("0.390569");
+        double t = 406.4884;
+        double cv = 2010 - 461.5;
+        double u = 2257000 + 2010 * (t - 373.15) - 461.5 * t;
+        var source = ClosedFluidChamber.of(water, mass, 10000, mass.multiply(BigDecimal.valueOf(u)));
+        assertEquals(7327, source.pressurePa(), 1);
+        var empty = ClosedFluidChamber.empty(water, 1000);
+        var stroke = BigDecimal.valueOf(1000);
+        var filled = source.meteredTransferTo(empty, stroke, Double.MAX_VALUE);
+        // The actual draw may stop short of 10% as the receiver develops backpressure
+        double fraction = filled.transferredMassKg().doubleValue() / mass.doubleValue();
+        assertTrue(fraction > 0 && fraction <= 0.1);
+        double finalK = t * (1 - Math.pow(1 - fraction, 2010 / cv)) / fraction;
+        assertEquals(finalK, filled.receiver().state().temperatureKelvin(), 0.001);
+
+        var heel = mass.movePointLeft(2);
+        var primed = ClosedFluidChamber.of(water, heel, 1000, heel.multiply(BigDecimal.valueOf(u)));
+        var moved = source.meteredTransferTo(primed, stroke, Double.MAX_VALUE);
+        assertTrue(moved.receiver().massKg().compareTo(heel) > 0);
+        assertTrue(moved.receiver().state().temperatureKelvin() < filled.receiver().state().temperatureKelvin());
+        assertEquals(0, mass.add(heel).compareTo(moved.source().massKg().add(moved.receiver().massKg())));
+    }
+
+    @Test
     void subdividingHeatDoesNotChangeTheFinalPhaseOrEnergy() {
         ClosedFluidChamber initial = ClosedFluidChamber
             .of(PureFluid.water(), BigDecimal.valueOf(1.0), 861.565125, new BigDecimal("1042343.4875"));

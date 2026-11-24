@@ -13,6 +13,7 @@ import com.cleanroommc.modularui.screen.ModularPanel;
 import com.cleanroommc.modularui.utils.Alignment;
 import com.cleanroommc.modularui.value.sync.FloatSyncValue;
 import com.cleanroommc.modularui.value.sync.IntSyncValue;
+import com.cleanroommc.modularui.value.sync.LongSyncValue;
 import com.cleanroommc.modularui.value.sync.PanelSyncManager;
 import com.cleanroommc.modularui.value.sync.StringSyncValue;
 import com.cleanroommc.modularui.widgets.ButtonWidget;
@@ -23,6 +24,7 @@ import com.cleanroommc.modularui.widgets.layout.Flow;
 import com.cleanroommc.modularui.widgets.layout.Row;
 import com.cleanroommc.modularui.widgets.textfield.TextFieldWidget;
 
+import gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount;
 import gregtech.api.util.GTUtility;
 import gregtech.common.gui.modularui.multiblock.base.MTEMultiBlockBaseGui;
 import gregtech.common.tileentities.machines.multi.MTEHeatPump;
@@ -42,10 +44,10 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
     protected ListWidget<IWidget, ?> createTerminalTextWidget(PanelSyncManager syncManager, ModularPanel parent) {
         FloatSyncValue inputTempSync = syncManager.findSyncHandler("inputTemp", FloatSyncValue.class);
         FloatSyncValue outputTempSync = syncManager.findSyncHandler("outputTemp", FloatSyncValue.class);
-        IntSyncValue inputCapacitySync = syncManager.findSyncHandler("inputCapacity", IntSyncValue.class);
-        IntSyncValue inputStoredSync = syncManager.findSyncHandler("inputStored", IntSyncValue.class);
-        IntSyncValue outputCapacitySync = syncManager.findSyncHandler("outputCapacity", IntSyncValue.class);
-        IntSyncValue outputStoredSync = syncManager.findSyncHandler("outputStored", IntSyncValue.class);
+        LongSyncValue inputBaseLitersSync = syncManager.findSyncHandler("inputBaseLiters", LongSyncValue.class);
+        LongSyncValue inputMicroKgSync = syncManager.findSyncHandler("inputMicroKg", LongSyncValue.class);
+        LongSyncValue outputBaseLitersSync = syncManager.findSyncHandler("outputBaseLiters", LongSyncValue.class);
+        LongSyncValue outputMicroKgSync = syncManager.findSyncHandler("outputMicroKg", LongSyncValue.class);
         StringSyncValue fluidNameSync = syncManager.findSyncHandler("fluidName", StringSyncValue.class);
         FloatSyncValue copSync = syncManager.findSyncHandler("cop", FloatSyncValue.class);
         IntSyncValue modeSync = syncManager.findSyncHandler("operatingMode", IntSyncValue.class);
@@ -291,40 +293,48 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "Input Network:")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "  Temperature: "
                         + EnumChatFormatting.GOLD + String.format("%.1f", inputTempSync.getValue()) + "K")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
-                    () -> EnumChatFormatting.WHITE + "  Capacity: "
-                        + EnumChatFormatting.GREEN + formatNumber(inputStoredSync.getValue()) + "L"
-                        + EnumChatFormatting.WHITE + " / "
-                        + EnumChatFormatting.YELLOW + formatNumber(inputCapacitySync.getValue()) + "L")
+                    () -> EnumChatFormatting.WHITE + "  Mass: "
+                        + EnumChatFormatting.GREEN + SubstanceAmount.fromRawUnits(inputMicroKgSync.getLongValue()).formatKilograms() + " kg")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
+            .child(
+                IKey.dynamic(
+                    () -> EnumChatFormatting.WHITE + "  Base volume: "
+                        + EnumChatFormatting.YELLOW + formatNumber(inputBaseLitersSync.getLongValue()) + " L")
+                    .asWidget()
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "Output Network:")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "  Temperature: "
                         + EnumChatFormatting.GOLD + String.format("%.1f", outputTempSync.getValue()) + "K")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
-                    () -> EnumChatFormatting.WHITE + "  Capacity: "
-                        + EnumChatFormatting.GREEN + formatNumber(outputStoredSync.getValue()) + "L"
-                        + EnumChatFormatting.WHITE + " / "
-                        + EnumChatFormatting.YELLOW + formatNumber(outputCapacitySync.getValue()) + "L")
+                    () -> EnumChatFormatting.WHITE + "  Mass: "
+                        + EnumChatFormatting.GREEN + SubstanceAmount.fromRawUnits(outputMicroKgSync.getLongValue()).formatKilograms() + " kg")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()));
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0))
+            .child(
+                IKey.dynamic(
+                    () -> EnumChatFormatting.WHITE + "  Base volume: "
+                        + EnumChatFormatting.YELLOW + formatNumber(outputBaseLitersSync.getLongValue()) + " L")
+                    .asWidget()
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0));
     }
 
     @Override
@@ -337,17 +347,17 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
         FloatSyncValue outputTempSync = new FloatSyncValue(multiblock::getOutputTemperature);
         syncManager.syncValue("outputTemp", outputTempSync);
 
-        IntSyncValue inputCapacitySync = new IntSyncValue(multiblock::getInputNetworkCapacity);
-        syncManager.syncValue("inputCapacity", inputCapacitySync);
+        LongSyncValue inputBaseLitersSync = new LongSyncValue(multiblock::getInputBaseLiters);
+        syncManager.syncValue("inputBaseLiters", inputBaseLitersSync);
 
-        IntSyncValue inputStoredSync = new IntSyncValue(multiblock::getInputNetworkStored);
-        syncManager.syncValue("inputStored", inputStoredSync);
+        LongSyncValue inputMicroKgSync = new LongSyncValue(multiblock::getInputMicroKg);
+        syncManager.syncValue("inputMicroKg", inputMicroKgSync);
 
-        IntSyncValue outputCapacitySync = new IntSyncValue(multiblock::getOutputNetworkCapacity);
-        syncManager.syncValue("outputCapacity", outputCapacitySync);
+        LongSyncValue outputBaseLitersSync = new LongSyncValue(multiblock::getOutputBaseLiters);
+        syncManager.syncValue("outputBaseLiters", outputBaseLitersSync);
 
-        IntSyncValue outputStoredSync = new IntSyncValue(multiblock::getOutputNetworkStored);
-        syncManager.syncValue("outputStored", outputStoredSync);
+        LongSyncValue outputMicroKgSync = new LongSyncValue(multiblock::getOutputMicroKg);
+        syncManager.syncValue("outputMicroKg", outputMicroKgSync);
 
         StringSyncValue fluidNameSync = new StringSyncValue(multiblock::getFluidName);
         syncManager.syncValue("fluidName", fluidNameSync);
@@ -370,35 +380,35 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
         syncManager.syncValue("totalEnergyCost", totalEnergyCostSync);
 
         IntSyncValue operatingModeSync = new IntSyncValue(multiblock::getOperatingModeId, multiblock::setOperatingModeById);
-        syncManager.syncValue("operatingMode", operatingModeSync);
+        syncManager.syncValue("operatingMode", operatingModeSync.allowC2S());
 
         // Universal value - interpreted based on operating mode
         FloatSyncValue universalValueSync = new FloatSyncValue(multiblock::getUniversalValue, multiblock::setUniversalValue);
-        syncManager.syncValue("universalValue", universalValueSync);
+        syncManager.syncValue("universalValue", universalValueSync.allowC2S());
 
         IntSyncValue heatDirectionSync = new IntSyncValue(() -> multiblock.isTargetHeating() ? 1 : 0,
             val -> multiblock.setTargetHeating(val != 0));
-        syncManager.syncValue("heatDirection", heatDirectionSync);
+        syncManager.syncValue("heatDirection", heatDirectionSync.allowC2S());
 
         // Fluid amount per operation (in mB/L)
         IntSyncValue fluidAmountSync = new IntSyncValue(multiblock::getFluidAmountPerOperation, multiblock::setFluidAmountPerOperation);
-        syncManager.syncValue("fluidAmount", fluidAmountSync);
+        syncManager.syncValue("fluidAmount", fluidAmountSync.allowC2S());
 
         // Temperature tolerances for passthrough mode (in K)
         FloatSyncValue lowerToleranceSync = new FloatSyncValue(multiblock::getLowerTemperatureTolerance, multiblock::setLowerTemperatureTolerance);
-        syncManager.syncValue("lowerTolerance", lowerToleranceSync);
+        syncManager.syncValue("lowerTolerance", lowerToleranceSync.allowC2S());
 
         FloatSyncValue upperToleranceSync = new FloatSyncValue(multiblock::getUpperTemperatureTolerance, multiblock::setUpperTemperatureTolerance);
-        syncManager.syncValue("upperTolerance", upperToleranceSync);
+        syncManager.syncValue("upperTolerance", upperToleranceSync.allowC2S());
 
         // Heat Exchanger Mode
         IntSyncValue heatExchangerModeSync = new IntSyncValue(() -> multiblock.isHeatExchangerMode() ? 1 : 0,
             val -> multiblock.setHeatExchangerMode(val != 0));
-        syncManager.syncValue("heatExchangerMode", heatExchangerModeSync);
+        syncManager.syncValue("heatExchangerMode", heatExchangerModeSync.allowC2S());
 
         IntSyncValue hotStreamSync = new IntSyncValue(() -> multiblock.isConfiguringHotStream() ? 1 : 0,
             val -> multiblock.setConfiguringHotStream(val != 0));
-        syncManager.syncValue("hotStream", hotStreamSync);
+        syncManager.syncValue("hotStream", hotStreamSync.allowC2S());
 
         // Heat Exchanger validation
         IntSyncValue hxValidSync = new IntSyncValue(() -> multiblock.hasValidHeatExchangerHatches() ? 1 : 0);
@@ -411,10 +421,10 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
         // Split Flow Mode
         IntSyncValue splitFlowModeSync = new IntSyncValue(() -> multiblock.isSplitFlowMode() ? 1 : 0,
             val -> multiblock.setSplitFlowMode(val != 0));
-        syncManager.syncValue("splitFlowMode", splitFlowModeSync);
+        syncManager.syncValue("splitFlowMode", splitFlowModeSync.allowC2S());
 
         FloatSyncValue splitRatioSync = new FloatSyncValue(multiblock::getSplitRatio, multiblock::setSplitRatio);
-        syncManager.syncValue("splitRatio", splitRatioSync);
+        syncManager.syncValue("splitRatio", splitRatioSync.allowC2S());
 
         // Split Flow validation
         IntSyncValue sfValidSync = new IntSyncValue(() -> multiblock.hasValidSplitFlowHatches() ? 1 : 0);
@@ -450,11 +460,9 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                 // Disable both HX and SF modes (activates Normal mode)
                 heatExchangerModeSync.updateCacheFromSource(false);
                 heatExchangerModeSync.setValue(0);
-                heatExchangerModeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(0));
 
                 splitFlowModeSync.updateCacheFromSource(false);
                 splitFlowModeSync.setValue(0);
-                splitFlowModeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(0));
                 return true;
             })
             .tooltipBuilder(t -> t.addLine(IKey.str("Normal Mode"))
@@ -477,7 +485,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
 
                     splitFlowModeSync.updateCacheFromSource(false);
                     splitFlowModeSync.setValue(1);
-                    splitFlowModeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(1));
                 }
                 return true;
             })
@@ -503,7 +510,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
 
                     heatExchangerModeSync.updateCacheFromSource(false);
                     heatExchangerModeSync.setValue(1);
-                    heatExchangerModeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(1));
                 }
                 return true;
             })
@@ -556,7 +562,7 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                 openSFModeSettingsPanel(parent, modeSync, universalValueSync, fluidAmountSync, splitRatioSync,
                     heatDirectionSync), true);
 
-        return new ButtonWidget<>().size(18, 18)
+        return new ButtonWidget<>().name("heatPumpSettings").size(18, 18)
             .marginRight(4)
             .onMousePressed(d -> {
                 // Open appropriate panel based on current mode
@@ -681,7 +687,7 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                     .width(50)
                     .alignment(Alignment.CenterLeft))
             .child(
-                new ButtonWidget<>().width(60)
+                new ButtonWidget<>().name("heatPumpStream").width(60)
                     .height(18)
                     .overlay(IKey.dynamic(() -> hotStreamSync.getValue() != 0
                         ? EnumChatFormatting.RED + "HOT"
@@ -690,7 +696,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                         hotStreamSync.updateCacheFromSource(false);
                         int newValue = hotStreamSync.getValue() == 0 ? 1 : 0;
                         hotStreamSync.setValue(newValue);
-                        hotStreamSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(newValue));
                         return true;
                     })
                     .tooltipBuilder(t -> t.addLine(IKey.str("Switch between Hot and Cold stream"))
@@ -718,7 +723,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                         heatDirectionSync.updateCacheFromSource(false);
                         int newValue = heatDirectionSync.getValue() == 0 ? 1 : 0;
                         heatDirectionSync.setValue(newValue);
-                        heatDirectionSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(newValue));
                         return true;
                     })
                     .tooltipBuilder(t -> t.addLine(IKey.str("Affects COP/Energy modes"))
@@ -745,7 +749,8 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
                     .alignment(Alignment.CenterLeft))
             .child(
                 // ONE text field, value interpreted by backend
-                new TextFieldWidget()
+                new TextFieldWidget().name("heatPumpSetpoint")
+                    .setNumbersDouble(value -> value)
                     .width(70)
                     .height(18)
                     .value(universalValueSync)
@@ -782,7 +787,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
             .onMousePressed(d -> {
                 modeSync.updateCacheFromSource(false);
                 modeSync.setValue(0);
-                modeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(0));
                 // Force universal value to refresh from backend
                 universalValueSync.updateCacheFromSource(true);
                 return true;
@@ -803,7 +807,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
             .onMousePressed(d -> {
                 modeSync.updateCacheFromSource(false);
                 modeSync.setValue(1);
-                modeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(1));
                 // Force universal value to refresh from backend
                 universalValueSync.updateCacheFromSource(true);
                 return true;
@@ -813,7 +816,7 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
     }
 
     private IWidget createSettingsButton3(IntSyncValue modeSync, FloatSyncValue universalValueSync) {
-        return new ButtonWidget<>().widthRel(1)
+        return new ButtonWidget<>().name("heatPumpPowerMode").widthRel(1)
             .height(18)
             .overlay(IKey.dynamic(() -> {
                 boolean isActive = modeSync.getValue() == 2;
@@ -823,7 +826,6 @@ public class MTEHeatPumpGui extends MTEMultiBlockBaseGui<MTEHeatPump> {
             .onMousePressed(d -> {
                 modeSync.updateCacheFromSource(false);
                 modeSync.setValue(2);
-                modeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(2));
                 // Force universal value to refresh from backend
                 universalValueSync.updateCacheFromSource(true);
                 return true;

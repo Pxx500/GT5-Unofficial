@@ -14,7 +14,7 @@ class IFNOperationalLimitsTest {
     void noAccumulatorUsesDefaultPressureLimit() {
         IFNOperationalLimits limits = IFNOperationalLimits.fromMembers(java.util.Collections.singleton(member(0, 2.0f)));
 
-        assertEquals(IFNPressurePolicy.DEFAULT_MAX_PRESSURE_BAR, limits.accumulatorMaxPressureBar());
+        assertEquals(IFNPressurePolicy.DEFAULT_MAX_PRESSURE_BAR, limits.maxPressureBar());
     }
 
     @Test
@@ -24,7 +24,7 @@ class IFNOperationalLimitsTest {
                 member(1000, 4.5f),
                 member(0, 1.0f)));
 
-        assertEquals(4.5f, limits.accumulatorMaxPressureBar());
+        assertEquals(4.5f, limits.maxPressureBar());
     }
 
     @Test

@@ -2130,6 +2130,11 @@ public class GTProxy implements IFuelHandler {
     }
 
     @SubscribeEvent
+    public void onVfnChunkUnload(net.minecraftforge.event.world.ChunkEvent.Unload event) {
+        NetworkManager.onChunkUnload(event.getChunk());
+    }
+
+    @SubscribeEvent
     public void onPlayerTickEventServer(TickEvent.PlayerTickEvent event) {
         final EntityPlayer player = event.player;
         if (!event.side.isServer() || event.phase == TickEvent.Phase.END

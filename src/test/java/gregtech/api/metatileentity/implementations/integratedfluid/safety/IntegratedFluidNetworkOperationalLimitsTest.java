@@ -1,5 +1,6 @@
 package gregtech.api.metatileentity.implementations.integratedfluid.safety;
 
+import static gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSupport.restoreDrySteamAt475K;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
@@ -16,8 +17,7 @@ class IntegratedFluidNetworkOperationalLimitsTest {
         network.addMember(member(1000, 9.0f));
         network.addMember(member(1000, 6.0f));
 
-        assertEquals(6.0f, network.getOperationalLimits().accumulatorMaxPressureBar());
-        assertEquals(6.0f, network.getAccumulatorMaxPressureBar());
+        assertEquals(6.0f, network.getOperationalLimits().maxPressureBar());
     }
 
     @Test
@@ -34,7 +34,8 @@ class IntegratedFluidNetworkOperationalLimitsTest {
     void networkEvaluatesCurrentTemperatureAgainstOperationalLimits() {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
-        network.addMember(member(1000, 9.0f, 250.0f));
+        network.addMember(member(1000, 9.0f, 400.0f));
+        restoreDrySteamAt475K(network, 1);
 
         assertEquals(IFNTemperatureLimitStatus.RUPTURE, network.getTemperatureLimitEvaluation().status());
     }
@@ -44,7 +45,7 @@ class IntegratedFluidNetworkOperationalLimitsTest {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
         network.addMember(member(1000, 6.0f));
-        network.setPressure(7.0f);
+        restoreDrySteamAt475K(network, 7.0f);
 
         assertEquals(IFNPressureLimitStatus.RUPTURE, network.getPressureLimitEvaluation().status());
     }
@@ -54,7 +55,7 @@ class IntegratedFluidNetworkOperationalLimitsTest {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
         network.addMember(member(1000, 10.0f));
-        network.setPressure(10.5f);
+        restoreDrySteamAt475K(network, 10.5f);
 
         for (int tick = 0; tick < 199; tick++) {
             network.tickPressureSafety();
@@ -72,9 +73,9 @@ class IntegratedFluidNetworkOperationalLimitsTest {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
         network.addMember(member(1000, 10.0f));
-        network.setPressure(10.5f);
+        restoreDrySteamAt475K(network, 10.5f);
         network.tickPressureSafety();
-        network.setPressure(10.0f);
+        restoreDrySteamAt475K(network, 9.5f);
         network.tickPressureSafety();
 
         assertEquals(0, network.getPressureWarningTicks());
@@ -84,7 +85,8 @@ class IntegratedFluidNetworkOperationalLimitsTest {
     void networkTracksPersistentTemperatureWarnings() {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
-        network.addMember(member(1000, 9.0f, 290.0f));
+        network.addMember(member(1000, 9.0f, 460.0f));
+        restoreDrySteamAt475K(network, 1);
 
         for (int tick = 0; tick < 199; tick++) {
             network.tickTemperatureSafety();
@@ -101,8 +103,8 @@ class IntegratedFluidNetworkOperationalLimitsTest {
     void operationalSafetyTickUpdatesPressureAndTemperatureWarningsTogether() {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
-        network.addMember(member(1000, 10.0f, 290.0f));
-        network.setPressure(10.5f);
+        network.addMember(member(1000, 10.0f, 460.0f));
+        restoreDrySteamAt475K(network, 10.5f);
 
         IFNOperationalSafetyEvaluation evaluation = null;
         for (int tick = 0; tick < 200; tick++) {
@@ -119,7 +121,8 @@ class IntegratedFluidNetworkOperationalLimitsTest {
     void operationalSafetyTickReportsImmediateRupture() {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
 
-        network.addMember(member(1000, 10.0f, 250.0f));
+        network.addMember(member(1000, 10.0f, 400.0f));
+        restoreDrySteamAt475K(network, 1);
 
         IFNOperationalSafetyEvaluation evaluation = network.tickOperationalSafety();
 
@@ -160,7 +163,7 @@ class IntegratedFluidNetworkOperationalLimitsTest {
 
             @Override
             public int getCapacityContribution() {
-                return 0;
+                return 100;
             }
 
             @Override

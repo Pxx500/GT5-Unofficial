@@ -17,13 +17,13 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import gregtech.api.metatileentity.implementations.integratedfluid.HorizonQAVfnScenario.ScenarioMember;
-import gregtech.api.metatileentity.implementations.integratedfluid.HorizonQAVfnScenario.SeededFluid;
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 class HorizonQAVfnDeterministicStressTest {
 
     @Test
     void deterministicSplitMergeStressPreservesGraphAndFluidInvariants() {
-        HorizonQAVfnScenario scenario = HorizonQAVfnScenario.create();
+        HorizonQAVfnScenario scenario = HorizonQAVfnScenario.create(IFNTestSupport.waterFluid());
         ScenarioMember input = scenario.inputHatch("stress-input");
         ScenarioMember pipeA = scenario.pipe("stress-pipe-a");
         ScenarioMember heatPump = scenario.machineHatch("stress-heat-pump");
@@ -57,8 +57,11 @@ class HorizonQAVfnDeterministicStressTest {
             assertTrue(modelEdges.add(edge), edge.label());
         }
         scenario.addNetworkFrom(input);
-        SeededFluid seededFluid = scenario.seedFluid(input, 120L, 300.0d);
-        assertRuntimeMatchesModel(scenario, members, modelEdges, seededFluid, "initial line");
+        IFNCanonicalState seededFluid = scenario.chargeWater(input, 120);
+        long mass = seededFluid.substanceAmount().rawUnits();
+        long specificEnergy = seededFluid.totalEnergy().rawUnits() / mass;
+        assertEquals(seededFluid.totalEnergy().rawUnits(), mass * specificEnergy);
+        assertRuntimeMatchesModel(scenario, members, modelEdges, mass, specificEnergy, 1, "initial line");
 
         Operation[] operations = new Operation[] {
             disconnect(heatPump, pipeB),
@@ -86,18 +89,19 @@ class HorizonQAVfnDeterministicStressTest {
 
         for (int step = 0; step < operations.length; step++) {
             Operation operation = operations[step];
+            int groupsBefore = expectedComponents(members, modelEdges).size();
             operation.apply(scenario, modelEdges);
-            assertRuntimeMatchesModel(
+            mass = assertRuntimeMatchesModel(
                 scenario,
                 members,
                 modelEdges,
-                seededFluid,
+                mass, specificEnergy, groupsBefore,
                 "step " + (step + 1) + " " + operation.label());
         }
     }
 
-    private static void assertRuntimeMatchesModel(HorizonQAVfnScenario scenario, List<ScenarioMember> members,
-        Set<Edge> modelEdges, SeededFluid seededFluid, String checkpoint) {
+    private static long assertRuntimeMatchesModel(HorizonQAVfnScenario scenario, List<ScenarioMember> members,
+        Set<Edge> modelEdges, long previousMass, long specificEnergy, int groupsBefore, String checkpoint) {
 
         List<Set<ScenarioMember>> expectedComponents = expectedComponents(members, modelEdges);
         Set<IntegratedFluidNetwork> runtimeNetworks = scenario.networksOf(members);
@@ -115,14 +119,17 @@ class HorizonQAVfnDeterministicStressTest {
         }
 
         long actualAmountQ = 0L;
-        long actualEnthalpyQ = 0L;
         for (IntegratedFluidNetwork network : runtimeNetworks) {
             assertEquals(network.getMemberCount(), network.getExpectedMemberCount(), checkpoint + " network consistency");
             actualAmountQ += network.getAmountQ();
-            actualEnthalpyQ += network.getEnthalpyQ();
+            assertEquals(network.getAmountQ() * specificEnergy, network.getCanonicalState().totalEnergy().rawUnits(),
+                checkpoint + " stored energy follows the retained water");
         }
-        assertEquals(seededFluid.amountQ, actualAmountQ, checkpoint + " fluid amount");
-        assertEquals(seededFluid.enthalpyQ, actualEnthalpyQ, checkpoint + " fluid enthalpy");
+        // With one edge changed, only a real two-way split can lose one microkilogram to rounding
+        long lost = previousMass - actualAmountQ;
+        if (expectedComponents.size() > groupsBefore) assertTrue(lost == 0 || lost == 1, checkpoint + " lost microkg=" + lost);
+        else assertEquals(0, lost, checkpoint + " mass on merge or unchanged connectivity");
+        return actualAmountQ;
     }
 
     private static List<Set<ScenarioMember>> expectedComponents(List<ScenarioMember> members, Set<Edge> edges) {

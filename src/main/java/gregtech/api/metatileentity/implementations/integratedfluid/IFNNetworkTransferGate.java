@@ -10,20 +10,9 @@ public final class IFNNetworkTransferGate {
         return network != null && network.getNetworkStatus() == IFNNetworkStatus.NORMAL;
     }
 
-    public static boolean areOperational(IntegratedFluidNetwork[] networks) {
-        if (networks == null) {
-            return false;
-        }
-        for (IntegratedFluidNetwork network : networks) {
-            if (!isOperational(network)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     public static boolean canInjectFromGtPipe(IntegratedFluidNetwork network) {
-        return isOperational(network) && network.getPressure() <= IFNPressurePolicy.injectorCutoffPressureBar();
+        return isOperational(network) && network.getTopologySnapshot().chamberVolume().isPresent()
+            && network.getPressure() <= IFNPressurePolicy.injectorCutoffPressureBar();
     }
 
     public static boolean canExtractToGtPipe(IntegratedFluidNetwork network) {

@@ -13,6 +13,7 @@ import com.cleanroommc.modularui.widgets.textfield.TextFieldWidget;
 import gregtech.api.modularui2.CoverGuiData;
 import gregtech.api.modularui2.GTGuiTextures;
 import gregtech.common.covers.CoverIFNDetectorBase;
+import gregtech.common.covers.CoverIFNPressureDetector;
 import gregtech.common.gui.modularui.cover.base.CoverBaseGui;
 
 public final class CoverIFNDetectorGui extends CoverBaseGui<CoverIFNDetectorBase> {
@@ -34,15 +35,15 @@ public final class CoverIFNDetectorGui extends CoverBaseGui<CoverIFNDetectorBase
     private Flow makeMinValueRow() {
         return makeDoubleFieldRow(
             "ifn_detector_min",
-            "gt.interact.desc.ifn_detector.min",
-            new DoubleSyncValue(cover::getMinValue, cover::setMinValue));
+            cover instanceof CoverIFNPressureDetector ? "gt.interact.desc.ifn_detector.min.bar" : "gt.interact.desc.ifn_detector.min.kelvin",
+            new DoubleSyncValue(cover::getMinValue, cover::setMinValue).allowC2S());
     }
 
     private Flow makeMaxValueRow() {
         return makeDoubleFieldRow(
             "ifn_detector_max",
-            "gt.interact.desc.ifn_detector.max",
-            new DoubleSyncValue(cover::getMaxValue, cover::setMaxValue));
+            cover instanceof CoverIFNPressureDetector ? "gt.interact.desc.ifn_detector.max.bar" : "gt.interact.desc.ifn_detector.max.kelvin",
+            new DoubleSyncValue(cover::getMaxValue, cover::setMaxValue).allowC2S());
     }
 
     private Flow makeDoubleFieldRow(String name, String labelKey, DoubleSyncValue value) {
@@ -63,7 +64,7 @@ public final class CoverIFNDetectorGui extends CoverBaseGui<CoverIFNDetectorBase
     }
 
     private Flow makeModeRow() {
-        BooleanSyncValue linearMode = new BooleanSyncValue(cover::isLinearMode, cover::setLinearMode);
+        BooleanSyncValue linearMode = new BooleanSyncValue(cover::isLinearMode, cover::setLinearMode).allowC2S();
         return Flow.row()
             .name("ifn_detector_mode")
             .child(
@@ -81,7 +82,9 @@ public final class CoverIFNDetectorGui extends CoverBaseGui<CoverIFNDetectorBase
     }
 
     private Flow makeSourceModeRow() {
-        BooleanSyncValue deltaSourceMode = new BooleanSyncValue(cover::isDeltaSourceMode, cover::setDeltaSourceMode);
+        BooleanSyncValue deltaSourceMode = new BooleanSyncValue(cover::isDeltaSourceMode, cover::setDeltaSourceMode).allowC2S();
+        String deltaLabel = cover instanceof CoverIFNPressureDetector ? "gt.interact.desc.ifn_detector.source.delta_pressure"
+            : "gt.interact.desc.ifn_detector.source.delta";
         return Flow.row()
             .name("ifn_detector_source_mode")
             .child(
@@ -93,7 +96,7 @@ public final class CoverIFNDetectorGui extends CoverBaseGui<CoverIFNDetectorBase
                 IKey.dynamic(
                     () -> translateToLocal(
                         deltaSourceMode.getValue()
-                            ? "gt.interact.desc.ifn_detector.source.delta"
+                            ? deltaLabel
                             : "gt.interact.desc.ifn_detector.source.absolute"))
                     .asWidget());
     }

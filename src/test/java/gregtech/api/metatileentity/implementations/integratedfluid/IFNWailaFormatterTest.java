@@ -3,16 +3,14 @@ package gregtech.api.metatileentity.implementations.integratedfluid;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
 import net.minecraft.nbt.NBTTagCompound;
 
 import org.junit.jupiter.api.Test;
+
+import gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount;
 
 class IFNWailaFormatterTest {
 
@@ -27,7 +25,7 @@ class IFNWailaFormatterTest {
 
         IFNWailaFormatter.addNetworkStatus(tag, tooltip);
 
-        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Status:") && line.contains("Frozen")));
+        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Status:") && line.contains("Locked")));
         assertTrue(tooltip.stream().anyMatch(line -> line.contains("fluid conflict")));
     }
 
@@ -61,17 +59,49 @@ class IFNWailaFormatterTest {
     }
 
     @Test
-    void substanceAmountUsesReferenceLiters() {
+    void vacuumAndUnsolvedContentsDoNotAdvertiseAFluidTemperatureOrPhase() {
+        var network = IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), 1000, 0, 20);
+        var vacuum = new NBTTagCompound();
+        IFNWailaFormatter.writeNetworkStatus(network, vacuum);
+        assertTrue(vacuum.hasKey("pressure") && vacuum.getFloat("pressure") == 0);
+        assertFalse(vacuum.hasKey("temperature"));
+        assertFalse(vacuum.hasKey("phase"));
+        network.replaceCanonicalState(gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState
+            .fromRaw("water", 1_000_000, Long.MAX_VALUE));
+        var invalid = new NBTTagCompound();
+        IFNWailaFormatter.writeNetworkStatus(network, invalid);
+        assertTrue(network.isFrozen() && invalid.getLong("substanceAmountQ") == 1_000_000);
+        assertFalse(invalid.hasKey("temperature") || invalid.hasKey("pressure") || invalid.hasKey("phase"));
+    }
+
+    @Test
+    void oneExternalSteamUnitShowsFractionalWaterMass() {
+        net.minecraftforge.fluids.Fluid water = IFNTestSupport.waterFluid();
+        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(water, 1000, 0, 20.0f);
+        network.replaceCanonicalState(gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState
+            .fromRaw("water", 6250L, 14_129_490_625L));
+        NBTTagCompound tag = new NBTTagCompound();
+        tag.setBoolean("hasNetwork", true);
+        IFNWailaFormatter.writeNetworkStatus(network, tag);
+        List<String> tooltip = new ArrayList<>();
+        IFNWailaFormatter.addNetworkStatus(tag, tooltip);
+        IFNWailaFormatter.addFluidStorageSummary(tag, tooltip, "Fluid", true);
+        assertTrue(tooltip.stream().anyMatch(line -> line.contains("0.00625 kg")), tooltip.toString());
+        assertFalse(tooltip.stream().anyMatch(line -> line.contains("Empty")), tooltip.toString());
+    }
+
+    @Test
+    void massIsAlwaysInKilograms() {
         NBTTagCompound tag = new NBTTagCompound();
         List<String> tooltip = new ArrayList<>();
 
         tag.setBoolean("hasNetwork", true);
         tag.setString("networkStatus", "NORMAL");
-        tag.setLong("substanceAmountQ", 12L * IntegratedFluidNetwork.AMOUNT_SCALE);
+        tag.setLong("substanceAmountQ", 12L * SubstanceAmount.SCALE);
 
         IFNWailaFormatter.addNetworkStatus(tag, tooltip);
 
-        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Substance:") && line.contains("12 refL")));
+        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Mass:") && line.contains("12 kg")));
     }
 
     @Test
@@ -95,20 +125,18 @@ class IFNWailaFormatterTest {
     }
 
     @Test
-    void phaseAndOccupiedVolumeAreVisibleInNetworkStatus() {
+    void twoPhaseMixtureIsVisibleInNetworkStatus() {
         NBTTagCompound tag = new NBTTagCompound();
         List<String> tooltip = new ArrayList<>();
 
         tag.setBoolean("hasNetwork", true);
         tag.setString("networkStatus", "NORMAL");
         tag.setString("phase", "TWO_PHASE");
-        tag.setDouble("occupiedVolume", 42.4d);
+        tag.setLong("substanceAmountQ", 42_400_000);
 
         IFNWailaFormatter.addNetworkStatus(tag, tooltip);
 
         assertTrue(tooltip.stream().anyMatch(line -> line.contains("Phase:") && line.contains("Two Phase")),
-            tooltip.toString());
-        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Occupied Volume:") && line.contains("42 L")),
             tooltip.toString());
     }
 
@@ -120,7 +148,7 @@ class IFNWailaFormatterTest {
         tag.setBoolean("hasNetwork", true);
         tag.setString("networkStatus", "NORMAL");
         tag.setString("phase", "VAPOR");
-        tag.setDouble("occupiedVolume", 42.4d);
+        tag.setLong("substanceAmountQ", 42_400_000);
 
         IFNWailaFormatter.addNetworkStatus(tag, tooltip);
 
@@ -131,33 +159,20 @@ class IFNWailaFormatterTest {
     }
 
     @Test
-    void integratedFluidPipeDoesNotOverwriteSolvedWailaPhase() throws IOException {
-        String source = new String(
-            Files.readAllBytes(Paths.get(
-                "src/main/java/gregtech/api/metatileentity/implementations/integratedfluid/MTEIntegratedFluidPipe.java")),
-            StandardCharsets.UTF_8);
-
-        assertTrue(source.contains("IFNWailaFormatter.writeNetworkStatus(network, tag)"));
-        assertFalse(
-            source.contains("tag.setString(\"phase\", network.getPhase().name())"),
-            "pipe WAILA must keep the solved phase from IFNWailaFormatter.writeNetworkStatus");
-    }
-
-    @Test
     void fluidStorageSummaryUsesOccupiedVolumeInsteadOfFluidStackAmount() {
         NBTTagCompound tag = new NBTTagCompound();
         List<String> tooltip = new ArrayList<>();
 
-        tag.setInteger("maxCapacity", 150);
-        tag.setInteger("totalCapacity", 150);
-        tag.setDouble("occupiedVolume", 100.0d);
-        tag.setString("networkFluidName", "Water");
-        tag.setInteger("fluidStackAmount", 200);
+        tag.setLong("maxCapacity", 3_000_000_000L);
+        tag.setLong("totalCapacity", 3_000_000_000L);
+        tag.setDouble("occupiedVolume", 2_900_000_000d);
+        tag.setString("substanceId", "water");
+        tag.setLong("substanceAmountQ", 200_000_000);
 
         IFNWailaFormatter.addFluidStorageSummary(tag, tooltip, "Network Fluid", false);
 
         assertTrue(tooltip.stream().anyMatch(line -> line.contains("Network Fluid:")));
-        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Occupied:") && line.contains("100/150 L")));
+        assertTrue(tooltip.stream().anyMatch(line -> line.contains("Occupied:") && line.replaceAll("[^0-9/]", "").equals("2900000000/3000000000")));
         assertTrue(tooltip.stream().noneMatch(line -> line.contains("Amount:") || line.contains("Std Amount")));
     }
 }

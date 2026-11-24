@@ -1,103 +1,35 @@
 package gregtech.api.metatileentity.implementations.integratedfluid;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import net.minecraftforge.fluids.Fluid;
+import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
+
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 class IntegratedFluidNetworkStateTest {
 
     @Test
-    void bothInletPathsPreserveTheSuppliedGasEnergy() {
-        Fluid vapor = IFNTestSupport.vaporFluid();
-        long amountQ = 1_000L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(500.0d, amountQ);
-
-        IntegratedFluidNetwork stateNetwork = IFNTestSupport.newNetwork(vapor, 1_000, 0, 10.0f);
-        stateNetwork.addState(vapor, amountQ, enthalpyQ);
-
-        IntegratedFluidNetwork flowWorkNetwork = IFNTestSupport.newNetwork(vapor, 1_000, 0, 10.0f);
-        flowWorkNetwork.add(vapor, amountQ, enthalpyQ);
-
-        assertEquals(500.0f, stateNetwork.getTemperature(), 0.001f);
-        assertEquals(500.0f, flowWorkNetwork.getTemperature(), 0.001f);
-        assertEquals(enthalpyQ, stateNetwork.getEnthalpyQ());
-        assertEquals(enthalpyQ, flowWorkNetwork.getEnthalpyQ());
-    }
-
-    @Test
-    void liquidCanAcceptRejectsStatesAbovePressureLimit() {
-        Fluid liquid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(liquid, 100, 100, 1.5f);
-
-        long acceptedAmountQ = 130L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long rejectedAmountQ = 150L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long acceptedEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(300.0d, acceptedAmountQ);
-        long rejectedEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(300.0d, rejectedAmountQ);
-
-        assertTrue(network.canAccept(liquid, acceptedAmountQ, acceptedEnthalpyQ));
-        assertFalse(network.canAccept(liquid, rejectedAmountQ, rejectedEnthalpyQ));
-    }
-
-    @Test
-    void getMaxAddableAmountQMatchesLiquidPressureLimit() {
-        Fluid liquid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(liquid, 100, 100, 1.5f);
-
-        long requestedAmountQ = 200L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long maxAddableQ = network.getMaxAddableAmountQ(liquid, 300.0d, requestedAmountQ);
-
-        assertTrue(maxAddableQ >= 133L * IntegratedFluidNetwork.AMOUNT_SCALE - 1L);
-        assertTrue(maxAddableQ <= 134L * IntegratedFluidNetwork.AMOUNT_SCALE);
-    }
-
-    @Test
-    void fluidStateSnapshotCanDerivePredictedStatesWithoutMutatingOriginal() {
-        Fluid vapor = IFNTestSupport.vaporFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(vapor, 1_000, 0, 10.0f);
-        long initialAmountQ = 100L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long initialEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(350.0d, initialAmountQ);
-        network.addState(vapor, initialAmountQ, initialEnthalpyQ);
-
-        IFNFluidState original = network.snapshotState();
-        long addAmountQ = 50L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long addEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(450.0d, addAmountQ);
-
-        IFNFluidState predicted = original.withAddedState(vapor, addAmountQ, addEnthalpyQ, 2.0f);
-
-        assertEquals(initialAmountQ, original.getAmountQ());
-        assertEquals(initialEnthalpyQ, original.getEnthalpyQ());
-        assertEquals(network.getFluidName(), original.getFluidName());
-        assertEquals(network.getPressure(), original.getPressureBar(), 0.0001f);
-        assertEquals(initialAmountQ + addAmountQ, predicted.getAmountQ());
-        assertEquals(initialEnthalpyQ + addEnthalpyQ, predicted.getEnthalpyQ());
-        assertEquals(vapor.getName(), predicted.getFluidName());
-        assertEquals(2.0f, predicted.getPressureBar(), 0.0001f);
-        assertEquals(initialAmountQ, network.getAmountQ());
-        assertEquals(initialEnthalpyQ, network.getEnthalpyQ());
-    }
-
-    @Test
-    void pressurePredictionsDoNotMutateNetworkState() {
-        Fluid vapor = IFNTestSupport.vaporFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(vapor, 1_000, 0, 10.0f);
-        long initialAmountQ = 100L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long initialEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(350.0d, initialAmountQ);
-        network.addState(vapor, initialAmountQ, initialEnthalpyQ);
-        IFNFluidState before = network.snapshotState();
-
-        long addAmountQ = 25L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long addEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(450.0d, addAmountQ);
-        network.predictPressureAfterAdd(vapor, addAmountQ, addEnthalpyQ);
-        network.predictPressureAfterStateAdd(vapor, addAmountQ, addEnthalpyQ);
-        network.predictPressureAfterExtract(25L * IntegratedFluidNetwork.AMOUNT_SCALE);
-
-        assertEquals(before.getFluidName(), network.getFluidName());
-        assertEquals(before.getAmountQ(), network.getAmountQ());
-        assertEquals(before.getEnthalpyQ(), network.getEnthalpyQ());
-        assertEquals(before.getPressureBar(), network.getPressure(), 0.0001f);
+    void liquidStrokeStopsAtReceiverSetpointWithoutLosingMassOrSpringEnergy() {
+        var water = IFNTestSupport.waterFluid();
+        var source = IFNTestSupport.newNetwork(water, 10000, 10000, 20);
+        var receiver = IFNTestSupport.newNetwork(water, 10000, 10000, 20);
+        long supply = 11_000_000_000L, existing = 9_700_000_000L;
+        source.replaceCanonicalState(IFNCanonicalState.fromRaw("water", supply, -100_000 * supply));
+        receiver.replaceCanonicalState(IFNCanonicalState.fromRaw("water", existing, -100_000 * existing));
+        double ceiling = 120_000;
+        assertTrue(receiver.getPressurePa() < ceiling && source.getPressurePa() > ceiling);
+        var before = receiver.getCanonicalState();
+        long moved = source.meterTo(receiver, 10_000_000_000L, ceiling);
+        assertTrue(moved > 0 && moved < supply);
+        assertEquals(ceiling, receiver.getPressurePa(), 1);
+        assertTrue(receiver.getPressurePa() <= ceiling);
+        assertEquals(supply - moved, source.getAmountQ());
+        assertEquals(existing + moved, receiver.getAmountQ());
+        assertEquals(-100_000 * (supply + existing),
+            source.getCanonicalState().totalEnergy().rawUnits() + receiver.getCanonicalState().totalEnergy().rawUnits());
+        assertEquals(existing, before.substanceAmount().rawUnits());
+        assertEquals(-100_000 * existing, before.totalEnergy().rawUnits());
+        assertEquals(0, source.meterTo(receiver, 10_000_000_000L, ceiling));
     }
 }

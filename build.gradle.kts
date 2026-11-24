@@ -18,17 +18,7 @@ tasks.test.configure {
 }
 
 val horizonsQaTestPatterns = listOf(
-    "*HorizonQAVfnBlockedTransferStressTest*",
-    "*HorizonQAVfnCoverageMapTest*",
-    "*HorizonQAVfnDeterministicStressTest*",
-    "*HorizonQAVfnFailureMatrixTest*",
-    "*HorizonQAVfnPersistenceStressTest*",
-    "*HorizonQAVfnTransferStressTest*",
-    "*HorizonQAVfnLongCycleTest*",
-    "*HorizonQAVfnHeatSystemTest*",
-    "*HorizonQAVfnHatchMatrixTest*",
-    "*HorizonQAVfnTopologyMatrixTest*",
-    "*HorizonQAVfnTopologyScenarioTest*",
+    "*HorizonQAVfn*Test*",
     "*NetworkManagerPersistenceTest*",
     "*NetworkManagerLifecycleTest*",
     "*MTEIntegratedFluidPipeLifecycleTest*",
@@ -40,34 +30,6 @@ val horizonsQaTestPatterns = listOf(
     "*CoverIFNDetectorBaseTest*",
     "*CoverIFNDetectorGuiTest*",
 )
-
-val fullGameServerQaRequested = gradle.startParameter.taskNames.any {
-    it == "fullGameServerQA" || it.endsWith(":fullGameServerQA")
-}
-
-val fullGameServerQaRunDir = layout.projectDirectory.dir("run/server")
-
-val prepareFullGameServerQaRunDir = tasks.register("prepareFullGameServerQaRunDir") {
-    doLast {
-        val runDir = fullGameServerQaRunDir.asFile
-        runDir.mkdirs()
-        runDir.resolve("eula.txt").writeText("eula=true\n")
-
-        val serverProperties = runDir.resolve("server.properties")
-        val existingProperties = if (serverProperties.isFile) {
-            serverProperties.readLines().filterNot {
-                it.startsWith("online-mode=") || it.startsWith("motd=")
-            }
-        } else {
-            emptyList()
-        }
-        serverProperties.writeText(
-            (existingProperties + listOf(
-                "online-mode=false",
-                "motd=GT5 Full Game QA"))
-                .joinToString(System.lineSeparator(), postfix = System.lineSeparator()))
-    }
-}
 
 tasks.register<Test>("horizonsQA") {
     group = "verification"
@@ -118,6 +80,41 @@ minecraft {
     logger.log(logLevel, "Using {} as NBT version", gtNbtVersion)
 }
 
+// Keep the development-only Horizon QA API and fixtures out of the shipped mod
+if (providers.gradleProperty("horizonQaJar").isPresent) {
+    val vfnQa by sourceSets.creating {
+        compileClasspath += sourceSets.patchedMc.get().output + sourceSets.main.get().output + configurations.compileClasspath.get()
+    }
+    val vfnQaJar = tasks.register<Jar>("vfnQaJar") {
+        from(vfnQa.output)
+        archiveClassifier.set("vfn-qa")
+        destinationDirectory.set(layout.buildDirectory.dir("tmp"))
+    }
+    listOf("runServer25", "runClient25").forEach { taskName ->
+        tasks.named<RunMinecraftTask>(taskName).configure {
+            classpath(vfnQaJar)
+        }
+    }
+    providers.gradleProperty("vfnQaRestartWorld").orNull?.let { previous ->
+        val source = file(previous)
+        val report = file(providers.gradleProperty("horizonQaServerReportDir").get())
+        val game = file(providers.gradleProperty("runDir").get())
+        require(game.canonicalFile == report.resolve("game").canonicalFile)
+        val destination = game.resolve(source.name)
+        val stageWorld = tasks.register<Copy>("stageVfnRestartWorld") {
+            require(source.resolve("level.dat").isFile)
+            from(source)
+            into(destination)
+            doFirst {
+                check(!destination.exists() || destination.list()?.isEmpty() == true) {
+                    "Refusing to overwrite an existing test world: $destination"
+                }
+            }
+        }
+        tasks.named("runServer25").configure { dependsOn(stageWorld) }
+    }
+}
+
 val functionalTest by sourceSets.creating {
     java {
         srcDir("src/functionalTest/java")
@@ -148,13 +145,6 @@ tasks.assemble.configure {
 tasks.named<RunMinecraftTask>("runServer").configure {
     dependsOn(functionalTest.jarTaskName)
     classpath(configurations.named(functionalTest.runtimeClasspathConfigurationName), tasks.named(functionalTest.jarTaskName))
-    if (fullGameServerQaRequested) {
-        dependsOn(prepareFullGameServerQaRunDir)
-        jvmArgs(
-            "-Dgt5.fullGameQA=true",
-            "-Dgt5.test.package=gregtech.test.fullgame",
-            "-Dgt5.test.reportDir=./junit-full-game-out/")
-    }
 }
 
 tasks.named<RunMinecraftTask>("runClient").configure {
@@ -175,10 +165,4 @@ tasks.named<RunMinecraftTask>("runServer25").configure {
     }) {
         jvmArgs("-D$recipeLookupValidationProperty=true")
     }
-}
-
-tasks.register("fullGameServerQA") {
-    group = "verification"
-    description = "Runs GT5 full-game QA inside a headless dedicated server."
-    dependsOn(tasks.named("runServer"))
 }

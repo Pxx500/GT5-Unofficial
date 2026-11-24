@@ -24,7 +24,7 @@ public final class IFNSafetyLimits {
     }
 
     public float maxPressureDifferentialBar() {
-        return operationalLimits.accumulatorMaxPressureBar();
+        return operationalLimits.maxPressureBar();
     }
 
     public float maxTemperatureKelvin() {

@@ -11,6 +11,7 @@ import com.cleanroommc.modularui.screen.ModularPanel;
 import com.cleanroommc.modularui.utils.Alignment;
 import com.cleanroommc.modularui.value.sync.FloatSyncValue;
 import com.cleanroommc.modularui.value.sync.IntSyncValue;
+import com.cleanroommc.modularui.value.sync.LongSyncValue;
 import com.cleanroommc.modularui.value.sync.PanelSyncManager;
 import com.cleanroommc.modularui.value.sync.StringSyncValue;
 import com.cleanroommc.modularui.widgets.ButtonWidget;
@@ -21,6 +22,7 @@ import com.cleanroommc.modularui.widgets.layout.Flow;
 import com.cleanroommc.modularui.widgets.layout.Row;
 import com.cleanroommc.modularui.widgets.textfield.TextFieldWidget;
 
+import gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount;
 import gregtech.api.util.GTUtility;
 import gregtech.common.gui.modularui.multiblock.base.MTEMultiBlockBaseGui;
 import gregtech.common.tileentities.machines.multi.MTERadiator;
@@ -40,10 +42,10 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
         FloatSyncValue loopOutletPressureSync = syncManager.findSyncHandler("loopOutletPressure", FloatSyncValue.class);
         FloatSyncValue loopPressureDropSync = syncManager.findSyncHandler("loopPressureDrop", FloatSyncValue.class);
         FloatSyncValue targetTempSync = syncManager.findSyncHandler("targetTemperature", FloatSyncValue.class);
-        IntSyncValue inputCapacitySync = syncManager.findSyncHandler("inputCapacity", IntSyncValue.class);
-        IntSyncValue inputStoredSync = syncManager.findSyncHandler("inputStored", IntSyncValue.class);
-        IntSyncValue outputCapacitySync = syncManager.findSyncHandler("outputCapacity", IntSyncValue.class);
-        IntSyncValue outputStoredSync = syncManager.findSyncHandler("outputStored", IntSyncValue.class);
+        LongSyncValue inputBaseLitersSync = syncManager.findSyncHandler("inputBaseLiters", LongSyncValue.class);
+        LongSyncValue inputMicroKgSync = syncManager.findSyncHandler("inputMicroKg", LongSyncValue.class);
+        LongSyncValue outputBaseLitersSync = syncManager.findSyncHandler("outputBaseLiters", LongSyncValue.class);
+        LongSyncValue outputMicroKgSync = syncManager.findSyncHandler("outputMicroKg", LongSyncValue.class);
         IntSyncValue loopSegmentsSync = syncManager.findSyncHandler("loopSegments", IntSyncValue.class);
         IntSyncValue loopConductionSync = syncManager.findSyncHandler("loopConduction", IntSyncValue.class);
         IntSyncValue loopExchangeSync = syncManager.findSyncHandler("loopExchange", IntSyncValue.class);
@@ -102,41 +104,49 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "Input Network:")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "  Temperature: "
                         + EnumChatFormatting.RED + String.format("%.1f", inputTempSync.getValue()) + "K")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
-                    () -> EnumChatFormatting.WHITE + "  Capacity: "
-                        + EnumChatFormatting.GREEN + formatNumber(inputStoredSync.getValue()) + "L"
-                        + EnumChatFormatting.WHITE + " / "
-                        + EnumChatFormatting.YELLOW + formatNumber(inputCapacitySync.getValue()) + "L")
+                    () -> EnumChatFormatting.WHITE + "  Mass: "
+                        + EnumChatFormatting.GREEN + SubstanceAmount.fromRawUnits(inputMicroKgSync.getLongValue()).formatKilograms() + " kg")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
+            .child(
+                IKey.dynamic(
+                    () -> EnumChatFormatting.WHITE + "  Base volume: "
+                        + EnumChatFormatting.YELLOW + formatNumber(inputBaseLitersSync.getLongValue()) + " L")
+                    .asWidget()
+                    .setEnabledIf(w -> inputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "Output Network:")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
                     () -> EnumChatFormatting.WHITE + "  Temperature: "
                         + EnumChatFormatting.AQUA + String.format("%.1f", outputTempSync.getValue()) + "K"
-                        + EnumChatFormatting.GRAY + " (predicted)")
+                        + EnumChatFormatting.GRAY + " (loop)")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()))
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0))
             .child(
                 IKey.dynamic(
-                    () -> EnumChatFormatting.WHITE + "  Capacity: "
-                        + EnumChatFormatting.GREEN + formatNumber(outputStoredSync.getValue()) + "L"
-                        + EnumChatFormatting.WHITE + " / "
-                        + EnumChatFormatting.YELLOW + formatNumber(outputCapacitySync.getValue()) + "L")
+                    () -> EnumChatFormatting.WHITE + "  Mass: "
+                        + EnumChatFormatting.GREEN + SubstanceAmount.fromRawUnits(outputMicroKgSync.getLongValue()).formatKilograms() + " kg")
                     .asWidget()
-                    .setEnabledIf(w -> multiblock.getBaseMetaTileEntity().isActive()));
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0))
+            .child(
+                IKey.dynamic(
+                    () -> EnumChatFormatting.WHITE + "  Base volume: "
+                        + EnumChatFormatting.YELLOW + formatNumber(outputBaseLitersSync.getLongValue()) + " L")
+                    .asWidget()
+                    .setEnabledIf(w -> outputBaseLitersSync.getLongValue() > 0));
     }
 
     @Override
@@ -157,19 +167,19 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
 
         FloatSyncValue targetTempSync = new FloatSyncValue(multiblock::getTargetTemperatureSetting,
             multiblock::setTargetTemperatureSetting);
-        syncManager.syncValue("targetTemperature", targetTempSync);
+        syncManager.syncValue("targetTemperature", targetTempSync.allowC2S());
 
-        IntSyncValue inputCapacitySync = new IntSyncValue(multiblock::getInputNetworkCapacity);
-        syncManager.syncValue("inputCapacity", inputCapacitySync);
+        LongSyncValue inputBaseLitersSync = new LongSyncValue(multiblock::getInputBaseLiters);
+        syncManager.syncValue("inputBaseLiters", inputBaseLitersSync);
 
-        IntSyncValue inputStoredSync = new IntSyncValue(multiblock::getInputNetworkStored);
-        syncManager.syncValue("inputStored", inputStoredSync);
+        LongSyncValue inputMicroKgSync = new LongSyncValue(multiblock::getInputMicroKg);
+        syncManager.syncValue("inputMicroKg", inputMicroKgSync);
 
-        IntSyncValue outputCapacitySync = new IntSyncValue(multiblock::getOutputNetworkCapacity);
-        syncManager.syncValue("outputCapacity", outputCapacitySync);
+        LongSyncValue outputBaseLitersSync = new LongSyncValue(multiblock::getOutputBaseLiters);
+        syncManager.syncValue("outputBaseLiters", outputBaseLitersSync);
 
-        IntSyncValue outputStoredSync = new IntSyncValue(multiblock::getOutputNetworkStored);
-        syncManager.syncValue("outputStored", outputStoredSync);
+        LongSyncValue outputMicroKgSync = new LongSyncValue(multiblock::getOutputMicroKg);
+        syncManager.syncValue("outputMicroKg", outputMicroKgSync);
 
         IntSyncValue loopSegmentsSync = new IntSyncValue(multiblock::getLoopSegmentCount);
         syncManager.syncValue("loopSegments", loopSegmentsSync);
@@ -182,7 +192,7 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
 
         IntSyncValue constantTicksSync = new IntSyncValue(multiblock::getConstantOperationTicks,
             multiblock::setConstantOperationTicks);
-        syncManager.syncValue("constantTicks", constantTicksSync);
+        syncManager.syncValue("constantTicks", constantTicksSync.allowC2S());
 
         StringSyncValue fluidNameSync = new StringSyncValue(multiblock::getFluidName);
         syncManager.syncValue("fluidName", fluidNameSync);
@@ -194,7 +204,7 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
         syncManager.syncValue("modeName", modeNameSync);
 
         IntSyncValue modeSync = new IntSyncValue(multiblock::getMachineMode, multiblock::setMachineMode);
-        syncManager.syncValue("machineMode", modeSync);
+        syncManager.syncValue("machineMode", modeSync.allowC2S());
     }
 
     @Override
@@ -221,7 +231,7 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
             (pSyncManager, syncHandler) -> openSettingsPanel(parent, modeSync, constantTicksSync, targetTempSync)
         );
 
-        return new ButtonWidget<>().size(18, 18)
+        return new ButtonWidget<>().name("radiatorSettingsButton").size(18, 18)
             .marginRight(4)
             .overlay(IKey.str(EnumChatFormatting.AQUA + "R"))
             .onMousePressed(d -> {
@@ -258,7 +268,7 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
     }
 
     private IWidget createModeButton(String label, int mode, IntSyncValue modeSync) {
-        return new ButtonWidget<>().widthRel(1)
+        return new ButtonWidget<>().name(mode == 0 ? "radiatorTimed" : "radiatorTarget").widthRel(1)
             .height(18)
             .marginBottom(4)
             .overlay(IKey.dynamic(() -> (modeSync.getValue() == mode ? EnumChatFormatting.GREEN : EnumChatFormatting.GRAY)
@@ -266,7 +276,6 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
             .onMousePressed(d -> {
                 modeSync.updateCacheFromSource(false);
                 modeSync.setValue(mode);
-                modeSync.syncToServer(1, buffer -> buffer.writeVarIntToBuffer(mode));
                 return true;
             });
     }
@@ -278,7 +287,8 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
                     .width(70)
                     .alignment(Alignment.CenterLeft))
             .child(
-                new TextFieldWidget()
+                new TextFieldWidget().name("radiatorTemperature")
+                    .setNumbersDouble(value -> value)
                     .width(60)
                     .height(18)
                     .value(targetTempSync)
@@ -292,7 +302,7 @@ public class MTERadiatorGui extends MTEMultiBlockBaseGui<MTERadiator> {
                     .width(70)
                     .alignment(Alignment.CenterLeft))
             .child(
-                new TextFieldWidget()
+                new TextFieldWidget().name("radiatorTicks")
                     .width(60)
                     .height(18)
                     .setNumbers(20, 20 * 60)

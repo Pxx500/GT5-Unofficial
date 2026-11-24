@@ -12,7 +12,7 @@ class IFNPressureLimitEvaluationTest {
     void pressureAtLimitIsNormal() {
         IFNPressureLimitEvaluation evaluation = IFNPressureLimitEvaluation.evaluate(
                 10.0d,
-                IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f),
+                IFNOperationalLimits.ofMaxPressureBar(10.0f),
                 false);
 
         assertEquals(IFNPressureLimitStatus.NORMAL, evaluation.status());
@@ -24,7 +24,7 @@ class IFNPressureLimitEvaluationTest {
     void pressureAboveLimitWarnsBeforeRuptureThreshold() {
         IFNPressureLimitEvaluation evaluation = IFNPressureLimitEvaluation.evaluate(
                 10.5d,
-                IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f),
+                IFNOperationalLimits.ofMaxPressureBar(10.0f),
                 false);
 
         assertEquals(IFNPressureLimitStatus.WARNING, evaluation.status());
@@ -36,7 +36,7 @@ class IFNPressureLimitEvaluationTest {
     void pressureAtTenPercentOverLimitRequiresImmediateRupture() {
         IFNPressureLimitEvaluation evaluation = IFNPressureLimitEvaluation.evaluate(
                 11.0d,
-                IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f),
+                IFNOperationalLimits.ofMaxPressureBar(10.0f),
                 false);
 
         assertEquals(IFNPressureLimitStatus.RUPTURE, evaluation.status());
@@ -48,7 +48,7 @@ class IFNPressureLimitEvaluationTest {
     void incompleteNetworkDoesNotRuptureImmediately() {
         IFNPressureLimitEvaluation evaluation = IFNPressureLimitEvaluation.evaluate(
                 20.0d,
-                IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f),
+                IFNOperationalLimits.ofMaxPressureBar(10.0f),
                 true);
 
         assertEquals(IFNPressureLimitStatus.WARNING, evaluation.status());

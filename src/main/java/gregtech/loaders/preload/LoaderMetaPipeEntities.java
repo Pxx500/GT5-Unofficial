@@ -18,10 +18,15 @@ import gregtech.api.metatileentity.implementations.MTEFluidPipe;
 import gregtech.api.metatileentity.implementations.MTEFrame;
 import gregtech.api.metatileentity.implementations.MTEItemPipe;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInjectorHatch;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidElectricBoiler;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidHeatExchanger;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInputHatch;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidOutputHatch;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPipe;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPressureRegulator;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidSteamTurbine;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidVaporOutlet;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump;
 import gregtech.api.util.GTModHandler;
 import gregtech.api.util.GTOreDictUnificator;
 import gregtech.common.blocks.BlockFrameBox;
@@ -1526,11 +1531,13 @@ public final class LoaderMetaPipeEntities implements Runnable {
      * - Integrated Fluid Output Hatch: Outputs fluid from the network
      * - Integrated Fluid Injector Hatch: Bridges GT fluid pipes with integrated fluid network
      *
-     * IDs used: 5770-5779 (reserved for this system)
+     * IDs used: 5770-5781
      */
     private static void registerIntegratedFluidSystem() {
         // ID 5770: Integrated Fluid Pipe
-        new MTEIntegratedFluidPipe(5770, "pipe.integrated_fluid", "Integrated Fluid Pipe");
+        new MTEIntegratedFluidPipe(5770, "pipe.integrated_fluid", "Integrated Fluid Pipe", MTEIntegratedFluidPipe.Wall.STANDARD);
+        new MTEIntegratedFluidPipe(MTEIntegratedFluidPipe.REINFORCED_ID, "pipe.vfn_reinforced", "Reinforced VFN Pipe",
+            MTEIntegratedFluidPipe.Wall.REINFORCED);
 
         // ID 5771: Integrated Fluid Input Hatch (Tier 1/LV)
         new MTEIntegratedFluidInputHatch(5771, "hatch.integrated_fluid_input", "Integrated Fluid Input Hatch", 1);
@@ -1551,5 +1558,12 @@ public final class LoaderMetaPipeEntities implements Runnable {
             "hatch.integrated_fluid_pressure_regulator",
             "Integrated Fluid Pressure Regulator",
             1);
+        new MTEIntegratedFluidHeatExchanger(5775, "vfn.heat_exchanger", "VFN Heat Exchanger", 1);
+        new MTEIntegratedFluidElectricBoiler(5776, "vfn.electric_boiler", "VFN Electric Boiler", 2);
+        new MTEIntegratedFluidSteamTurbine(5777, "vfn.steam_turbine", "VFN Steam Turbine", 2);
+        new MTEIntegratedFluidVaporOutlet(5778, "vfn.vapor_outlet", "VFN Vapor Outlet", 1);
+        new MTEIntegratedFluidLiquidPump(5779, "vfn.liquid_pump", "VFN Liquid Pump", 2);
+        new MTEIntegratedFluidLiquidPump(MTEIntegratedFluidLiquidPump.HIGH_PRESSURE_ID, "vfn.high_pressure_pump",
+            "High Pressure VFN Pump", 4);
     }
 }

@@ -1,6 +1,7 @@
 package gregtech.api.metatileentity.implementations.integratedfluid.topology;
 
-import gregtech.api.metatileentity.implementations.integratedfluid.fluid.IFNFluidRegistry;
+import java.math.BigInteger;
+
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 public final class IFNMergePolicy {
@@ -14,28 +15,30 @@ public final class IFNMergePolicy {
         if (a.isEmpty() || b.isEmpty()) {
             return true;
         }
-        return IFNFluidRegistry.isSameSubstance(a.fluidId().get(), b.fluidId().get());
+        if (!a.fluidId().equals(b.fluidId())) return false;
+        try {
+            Math.addExact(a.substanceAmount().rawUnits(), b.substanceAmount().rawUnits());
+            Math.addExact(a.totalEnergy().rawUnits(), b.totalEnergy().rawUnits());
+            return true;
+        } catch (ArithmeticException overflow) {
+            return false;
+        }
     }
 
-    public static IFNCanonicalState merge(IFNCanonicalState first, IFNCanonicalState second) {
-        IFNCanonicalState a = normalize(first);
-        IFNCanonicalState b = normalize(second);
-
-        if (!canMerge(a, b)) {
-            throw new IllegalArgumentException("cannot merge different non-empty IFN fluids");
+    public static IFNCanonicalState merge(Iterable<IFNCanonicalState> inventories) {
+        String substance = null;
+        long mass = 0;
+        BigInteger energy = BigInteger.ZERO;
+        for (var inventory : inventories) {
+            if (inventory.isEmpty()) continue;
+            String id = inventory.fluidId().get();
+            if (substance != null && !substance.equals(id)) throw new IllegalArgumentException("fluid conflict");
+            substance = id;
+            mass = Math.addExact(mass, inventory.substanceAmount().rawUnits());
+            // Cold and hot chambers can cancel even when a partial sum exceeds the ledger
+            energy = energy.add(BigInteger.valueOf(inventory.totalEnergy().rawUnits()));
         }
-        if (a.isEmpty()) {
-            return b;
-        }
-        if (b.isEmpty()) {
-            return a;
-        }
-
-        return IFNCanonicalState.of(
-            IFNFluidRegistry.canonicalSubstanceId(a.fluidId().get()),
-            a.substanceAmount().plus(b.substanceAmount()),
-            a.internalEnergy().plus(b.internalEnergy())
-        );
+        return IFNCanonicalState.fromRaw(substance, mass, energy.longValueExact());
     }
 
     private static IFNCanonicalState normalize(IFNCanonicalState state) {

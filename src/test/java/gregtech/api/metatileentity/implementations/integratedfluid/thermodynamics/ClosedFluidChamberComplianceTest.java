@@ -11,6 +11,81 @@ import org.junit.jupiter.api.Test;
 class ClosedFluidChamberComplianceTest {
 
     @Test
+    void flowSettingChangesRealDeliveryBelowRatedHeadOnMvPower() {
+        var empty = ClosedFluidChamber.empty(PureFluid.water(), 1000);
+        var source = empty.admitReferenceStream(PureFluid.water(), 300, false, BigDecimal.ONE, 200, 0).chamber();
+        var sink = empty.admitReferenceStream(PureFluid.water(), 300, false, BigDecimal.ONE, 100, 0).chamber();
+        var slow = source.pumpLiquidTo(sink, BigDecimal.valueOf(20), 310000, 300000, 20 * 128);
+        var fast = source.pumpLiquidTo(sink, BigDecimal.valueOf(40), 310000, 300000, 20 * 128);
+        assertEquals(20, slow.transferredMassKg().doubleValue() * 1.043, 0.01);
+        assertEquals(40, fast.transferredMassKg().doubleValue() * 1.043, 0.01);
+        assertTrue(-fast.shaftWorkEu() > -slow.shaftWorkEu());
+    }
+
+    @Test
+    void paidStrokeReturnsCondensateAgainstBoilerPressure() {
+        var inlet = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.TEN, 100, BigDecimal.valueOf(-3000000));
+        var boiler = liquid(new ChamberVolume(1.043, 0.00001, 100000, 2), 150000, 350);
+        assertTrue(inlet.state().vaporMassFraction() > 0 && inlet.pressurePa() < boiler.pressurePa());
+        assertEquals(0, inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 0).transferredMassKg().signum());
+        var stroke = inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 100);
+        var mass = stroke.transferredMassKg();
+        long paid = -stroke.shaftWorkEu();
+        assertEquals(100L, paid);
+        double hydraulicEu = mass.doubleValue() * 1.043 * 0.001 * (stroke.receiver().pressurePa() - stroke.source().pressurePa());
+        assertTrue(hydraulicEu > 75 && hydraulicEu < paid, "The budget pays the actual lift and losses");
+        assertEquals(0, inlet.massKg().subtract(stroke.source().massKg()).compareTo(mass));
+        assertEquals(0, stroke.receiver().massKg().subtract(boiler.massKg()).compareTo(mass));
+        assertTrue(stroke.receiver().pressurePa() > boiler.pressurePa() && stroke.receiver().pressurePa() <= 220000);
+        assertEquals(0, stroke.source().totalEnergyEu().add(stroke.receiver().totalEnergyEu()).subtract(inlet.totalEnergyEu())
+            .subtract(boiler.totalEnergyEu()).compareTo(BigDecimal.valueOf(paid)));
+        assertEquals(0, inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 140000, 220000, 10000).transferredMassKg().signum());
+        assertEquals(0, inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 100000, 10000).transferredMassKg().signum());
+        var limited = inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 160000, 220000, 10000);
+        assertEquals(160000, limited.receiver().pressurePa(), 1);
+        assertTrue(limited.receiver().pressurePa() <= 160000, "Final stroke respects the outlet setting");
+        var vapor = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 2000, BigDecimal.valueOf(2203793));
+        assertEquals(0, vapor.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 100).transferredMassKg().signum());
+    }
+
+    @Test
+    void waterExportSpendsHydrophoreWorkButCannotWarmColdWater() {
+        var vessel = new ChamberVolume(1.043, 0.00001, 100000, 2);
+        var warm = liquid(vessel, 300000, 350);
+        var cold = liquid(vessel, 300000, 290);
+        assertEquals(0, cold.dischargeReferenceStream(300, false, BigDecimal.ONE, 1, 0).units());
+        assertEquals(0, warm.dischargeReferenceStream(375, true, new BigDecimal("0.00625"), 1, 0).units());
+        var export = warm.dischargeReferenceStream(300, false, BigDecimal.ONE, Integer.MAX_VALUE, 0);
+        assertEquals(1, export.units());
+        assertEquals(0, warm.massKg().subtract(export.chamber().massKg()).compareTo(BigDecimal.ONE));
+        assertTrue(export.chamber().elasticEnergyEu().compareTo(warm.elasticEnergyEu()) < 0);
+        assertTrue(export.chamber().pressurePa() >= 100000);
+        var imported = ClosedFluidChamber.empty(PureFluid.water(), 100).admitReferenceStream(PureFluid.water(), 300, false, BigDecimal.ONE, 1, 0);
+        assertEquals(1, imported.units());
+        assertTrue(export.chamber().totalEnergyEu().add(imported.chamber().totalEnergyEu()).compareTo(warm.totalEnergyEu()) < 0);
+    }
+
+    @Test
+    void waterCanLeaveAfterPassiveHeatingToItsExternalReference() {
+        var geometry = new ChamberVolume(1.043, 0.00001, 100000, 2);
+        var cold = liquid(geometry, 300000, 295);
+        assertEquals(0, cold.dischargeReferenceStream(300, false, BigDecimal.ONE, 1, 10000).units());
+        var warmed = cold;
+        for (int tick = 0; tick < 300; tick++) warmed = warmed.exchangeWithAmbient(300, 1500);
+        assertTrue(warmed.state().temperatureKelvin() <= 300);
+        assertEquals(300, warmed.state().temperatureKelvin(), 1e-6);
+        var exported = warmed.dischargeReferenceStream(300, false, BigDecimal.ONE, 1, 10000);
+        assertEquals(1, exported.units(), "Equilibrium with a 300 K reservoir must not require a hotter source");
+        var imported = ClosedFluidChamber.empty(PureFluid.water(), 100)
+            .admitReferenceStream(PureFluid.water(), 300, false, BigDecimal.ONE, 1, 10000);
+        assertEquals(1, imported.units());
+        var ambientHeat = warmed.totalEnergyEu().subtract(cold.totalEnergyEu());
+        assertTrue(ambientHeat.signum() > 0);
+        assertTrue(exported.chamber().totalEnergyEu().add(imported.chamber().totalEnergyEu())
+            .subtract(cold.totalEnergyEu()).compareTo(ambientHeat) <= 0);
+    }
+
+    @Test
     void vaporExpansionStoresWorkInsteadOfLeavingItInTheFluid() {
         // 450 K vapor at 200 kPa occupies 1001 L, including 1 L of spring stroke.
         BigDecimal mass = BigDecimal.valueOf(200000.0 * 1001.0 / (1000.0 * 461.5 * 450.0));

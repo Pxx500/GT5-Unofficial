@@ -5,19 +5,23 @@ import static com.gtnewhorizon.gtnhlib.util.numberformatting.NumberFormatUtil.fo
 import java.util.List;
 import java.util.Locale;
 
-import gregtech.api.metatileentity.implementations.integratedfluid.solver.IFNSolvedState;
+import gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.EnumChatFormatting;
-import net.minecraftforge.fluids.FluidStack;
 
 public final class IFNWailaFormatter {
 
     private IFNWailaFormatter() {}
 
     public static void writeNetworkStatus(IntegratedFluidNetwork network, NBTTagCompound tag) {
-        if (network == null || tag == null) {
-            return;
-        }
+        tag.setBoolean("hasNetwork", network != null);
+        if (network == null) return;
+        var geometry = network.getTopologySnapshot();
+        tag.setInteger("memberCount", geometry.memberCount());
+        tag.setLong("maxCapacity", geometry.baseVolume().toWholeLiters());
+        tag.setLong("accumulatorCapacity", geometry.accumulatorVolume().toWholeLiters());
+        tag.setLong("totalCapacity", geometry.totalVolume().toWholeLiters());
+        if (network.getAmountQ() == 0) tag.setFloat("pressure", 0);
 
         tag.setString("networkStatus", network.getNetworkStatus().name());
         String frozenReason = network.getFrozenReason();
@@ -25,12 +29,34 @@ public final class IFNWailaFormatter {
             tag.setString("frozenReason", frozenReason);
         }
         tag.setLong("substanceAmountQ", network.getAmountQ());
-        tag.setDouble("occupiedVolume", network.getOccupiedVolume());
-        if (network.getAmountQ() > 0L) {
-            IFNSolvedState solvedState = network.getSolvedState();
-            tag.setString("phase", solvedState.phaseComposition().primaryPhase().name());
+        tag.setString("substanceId", network.getCanonicalState().fluidId().orElse(""));
+        var state = network.getSolvedState();
+        if (state.isPresent()) {
+            var phases = state.get();
+            tag.setFloat("pressure", (float) (phases.pressurePa() / 100000));
+            tag.setFloat("temperature", (float) phases.temperatureKelvin());
+            tag.setDouble("occupiedVolume", network.getOccupiedVolume());
+            if (!network.isPending() && network.getAmbientExchangeTick() != Long.MIN_VALUE) {
+                tag.setDouble("ambientEuPerTick", network.getAmbientHeatMicroEu() / (1_000_000d * NetworkManager.AMBIENT_STEP_TICKS));
+            }
+            double vapor = phases.vaporMassFraction();
+            String phase = vapor == 1 ? "VAPOR" : vapor == 0 ? "LIQUID" : "TWO_PHASE";
+            switch (phases.denseRegion()) {
+                case SUPERCRITICAL -> phase = "SUPERCRITICAL";
+                case CROSSOVER -> phase = "DENSE_FLUID";
+                default -> {}
+            }
+            if (phases.solidMassFraction() > 0) {
+                phase = "SOLID";
+                if (phases.liquidMassFraction() > 0) phase += "_AND_LIQUID";
+                if (vapor > 0) phase += "_AND_VAPOR";
+            }
+            tag.setString("phase", phase);
+            tag.setDouble("quality", vapor);
+            tag.setDouble("solidFraction", phases.solidMassFraction());
+            tag.setDouble("liquidFraction", phases.liquidMassFraction());
         }
-        tag.setFloat("maxPressureBar", network.getOperationalLimits().accumulatorMaxPressureBar());
+        tag.setFloat("maxPressureBar", network.getOperationalLimits().maxPressureBar());
         tag.setFloat("maxTemperatureKelvin", network.getOperationalLimits().maxTemperatureKelvin());
         tag.setString("pressureLimitStatus", network.getPressureLimitEvaluation().status().name());
         tag.setString("temperatureLimitStatus", network.getTemperatureLimitEvaluation().status().name());
@@ -47,7 +73,7 @@ public final class IFNWailaFormatter {
         }
 
         if ("FROZEN".equals(status)) {
-            currenttip.add("Status: " + EnumChatFormatting.RED + "Frozen" + EnumChatFormatting.RESET);
+            currenttip.add("Status: " + EnumChatFormatting.RED + "Locked" + EnumChatFormatting.RESET);
             String reason = tag.getString("frozenReason");
             if (reason != null && !reason.isEmpty()) {
                 currenttip.add(EnumChatFormatting.RED + reason + EnumChatFormatting.RESET);
@@ -60,7 +86,9 @@ public final class IFNWailaFormatter {
 
         addSubstanceAmount(tag, currenttip);
         addPhase(tag, currenttip);
-        addOccupiedVolume(tag, currenttip);
+        if (tag.hasKey("ambientEuPerTick")) {
+            currenttip.add(String.format(Locale.ROOT, "Ambient heat: %+.3f EU/t", tag.getDouble("ambientEuPerTick")));
+        }
         addNetworkLimits(tag, currenttip);
         addLimitStatus(tag.getString("pressureLimitStatus"), "Pressure", currenttip);
         addLimitStatus(tag.getString("temperatureLimitStatus"), "Temperature", currenttip);
@@ -72,39 +100,21 @@ public final class IFNWailaFormatter {
             return;
         }
 
-        long wholeRefLiters = substanceAmountQ / IntegratedFluidNetwork.AMOUNT_SCALE;
-        currenttip.add("Substance: " + EnumChatFormatting.GRAY + wholeRefLiters + " refL" + EnumChatFormatting.RESET);
+        String kilograms = SubstanceAmount.fromRawUnits(substanceAmountQ).formatKilograms();
+        currenttip.add("Mass: " + EnumChatFormatting.GRAY + kilograms + " kg" + EnumChatFormatting.RESET);
     }
 
     private static void addPhase(NBTTagCompound tag, List<String> currenttip) {
         String phase = tag.getString("phase");
-        if (phase == null || phase.isEmpty() || !hasDisplayableFluidState(tag)) {
+        if (phase == null || phase.isEmpty() || tag.getLong("substanceAmountQ") <= 0) {
             return;
         }
 
         currenttip.add("Phase: " + EnumChatFormatting.GRAY + formatPhaseName(phase) + EnumChatFormatting.RESET);
-    }
-
-    private static void addOccupiedVolume(NBTTagCompound tag, List<String> currenttip) {
-        if (!tag.hasKey("occupiedVolume")) {
-            return;
-        }
-
-        int occupiedVolume = (int) Math.round(tag.getDouble("occupiedVolume"));
-        if (occupiedVolume <= 0) {
-            return;
-        }
-
-        currenttip.add(
-            "Occupied Volume: " + EnumChatFormatting.GREEN
-                + formatNumber(occupiedVolume)
-                + " L"
-                + EnumChatFormatting.RESET);
-    }
-
-    private static boolean hasDisplayableFluidState(NBTTagCompound tag) {
-        return tag.getLong("substanceAmountQ") > 0L || tag.getDouble("occupiedVolume") > 0.0d || tag.hasKey("networkFluid")
-            || tag.hasKey("networkFluidName");
+        double liquid = tag.getDouble("liquidFraction");
+        double solid = tag.getDouble("solidFraction");
+        if (liquid > 0 && liquid < 1) currenttip.add(String.format(Locale.ROOT, "Liquid mass: %.1f%%", 100 * liquid));
+        if (solid > 0 && solid < 1) currenttip.add(String.format(Locale.ROOT, "Solid mass: %.1f%%", 100 * solid));
     }
 
     private static String formatPhaseName(String phase) {
@@ -150,22 +160,10 @@ public final class IFNWailaFormatter {
             return;
         }
 
-        int maxCapacity = tag.getInteger("maxCapacity");
-        int accumulatorCapacity = tag.getInteger("accumulatorCapacity");
-        int totalCapacity = tag.hasKey("totalCapacity") ? tag.getInteger("totalCapacity") : maxCapacity + accumulatorCapacity;
-
-        String fluidName = tag.getString("networkFluidName");
-        int fluidStackAmount = tag.getInteger("fluidStackAmount");
-        FluidStack fluid = null;
-        if (tag.hasKey("networkFluid")) {
-            fluid = FluidStack.loadFluidStackFromNBT(tag.getCompoundTag("networkFluid"));
-            if (fluid != null) {
-                fluidName = fluid.getLocalizedName();
-                fluidStackAmount = fluid.amount;
-            }
-        }
-
-        if (fluidName == null || fluidName.isEmpty()) {
+        long maxCapacity = tag.getLong("maxCapacity");
+        long accumulatorCapacity = tag.getLong("accumulatorCapacity");
+        long totalCapacity = tag.getLong("totalCapacity");
+        if (tag.getLong("substanceAmountQ") == 0) {
             if (detailedCapacity) {
                 currenttip.add("Empty (Capacity: " + formatNumber(totalCapacity) + " L)");
                 addCapacitySummary(currenttip, maxCapacity, accumulatorCapacity, totalCapacity, true);
@@ -175,22 +173,24 @@ public final class IFNWailaFormatter {
             return;
         }
 
+        String substance = tag.getString("substanceId");
+        String fluidName = "water".equals(substance) ? net.minecraft.util.StatCollector.translateToLocal("tile.water.name") : substance;
         currenttip.add(fluidLabel + ": " + EnumChatFormatting.AQUA + fluidName + EnumChatFormatting.RESET);
-        int occupiedVolume = tag.hasKey("occupiedVolume")
-            ? (int) Math.round(tag.getDouble("occupiedVolume"))
-            : fluidStackAmount;
-        currenttip.add(
-            "Occupied: " + EnumChatFormatting.GREEN
-                + formatNumber(occupiedVolume)
-                + "/"
-                + formatNumber(totalCapacity)
-                + " L"
-                + EnumChatFormatting.RESET);
+        if (tag.hasKey("occupiedVolume")) {
+            long occupiedVolume = Math.round(tag.getDouble("occupiedVolume"));
+            currenttip.add(
+                "Occupied: " + EnumChatFormatting.GREEN
+                    + formatNumber(occupiedVolume)
+                    + "/"
+                    + formatNumber(totalCapacity)
+                    + " L"
+                    + EnumChatFormatting.RESET);
+        }
         addCapacitySummary(currenttip, maxCapacity, accumulatorCapacity, totalCapacity, detailedCapacity);
     }
 
-    private static void addCapacitySummary(List<String> currenttip, int maxCapacity, int accumulatorCapacity,
-        int totalCapacity, boolean detailedCapacity) {
+    private static void addCapacitySummary(List<String> currenttip, long maxCapacity, long accumulatorCapacity,
+        long totalCapacity, boolean detailedCapacity) {
         if (accumulatorCapacity <= 0) {
             return;
         }
@@ -211,6 +211,13 @@ public final class IFNWailaFormatter {
             EnumChatFormatting.GRAY + "(+"
                 + formatNumber(accumulatorCapacity)
                 + " Hydrophore capacity)" + EnumChatFormatting.RESET);
+    }
+
+    static void addOperatingConditions(NBTTagCompound tag, List<String> lines) {
+        if (tag.hasKey("pressure")) lines.add(String.format(Locale.ROOT, "Pressure: %s%.2f bar%s",
+            EnumChatFormatting.YELLOW, tag.getFloat("pressure"), EnumChatFormatting.RESET));
+        if (tag.hasKey("temperature")) lines.add(String.format(Locale.ROOT, "Temperature: %s%.2f K%s",
+            EnumChatFormatting.RED, tag.getFloat("temperature"), EnumChatFormatting.RESET));
     }
 
     private static void addLimitStatus(String status, String label, List<String> currenttip) {

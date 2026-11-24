@@ -9,8 +9,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
-import net.minecraftforge.fluids.Fluid;
-
 import org.junit.jupiter.api.Test;
 
 import gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSupport;
@@ -21,13 +19,12 @@ class IFNNetworkSafetyTickerTest {
 
     @Test
     void tickAppliesOperationalFailureAndReportsCandidate() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = seededNetwork(fluid);
+        IntegratedFluidNetwork network = new IntegratedFluidNetwork();
         IIntegratedFluidMember pipe = failureCandidate();
         List<IIntegratedFluidMember> failed = new ArrayList<>();
 
         network.addMember(pipe);
-        network.setPressure(12.0f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 12.0f);
 
         int failures = new IFNNetworkSafetyTicker()
             .tick(Collections.singleton(network), fixedRandom(0.99d), failed::add);
@@ -40,12 +37,11 @@ class IFNNetworkSafetyTickerTest {
 
     @Test
     void tickSkipsPendingNetwork() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = seededNetwork(fluid);
+        IntegratedFluidNetwork network = new IntegratedFluidNetwork();
         List<IIntegratedFluidMember> failed = new ArrayList<>();
 
         network.addMember(failureCandidate());
-        network.setPressure(12.0f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 12.0f);
         network.setPending(true);
 
         int failures = new IFNNetworkSafetyTicker()
@@ -54,14 +50,6 @@ class IFNNetworkSafetyTickerTest {
         assertEquals(0, failures);
         assertTrue(failed.isEmpty());
         assertTrue(!network.getCanonicalState().isEmpty());
-    }
-
-    private static IntegratedFluidNetwork seededNetwork(Fluid fluid) {
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 100, 100, 10.0f);
-        long amountQ = 10L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(300.0d, amountQ);
-        network.addState(fluid, amountQ, enthalpyQ);
-        return network;
     }
 
     private static IIntegratedFluidMember failureCandidate() {
@@ -88,7 +76,7 @@ class IFNNetworkSafetyTickerTest {
 
             @Override
             public int getCapacityContribution() {
-                return 0;
+                return 100;
             }
 
             @Override

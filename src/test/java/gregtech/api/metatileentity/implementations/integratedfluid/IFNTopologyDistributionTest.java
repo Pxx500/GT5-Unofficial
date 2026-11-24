@@ -32,8 +32,8 @@ class IFNTopologyDistributionTest {
         long splitSubstance = shares[0].substanceAmount()
             .plus(shares[1].substanceAmount())
             .rawUnits();
-        long splitEnergy = shares[0].internalEnergy()
-            .plus(shares[1].internalEnergy())
+        long splitEnergy = shares[0].totalEnergy()
+            .plus(shares[1].totalEnergy())
             .rawUnits();
 
         assertEquals(10L, splitSubstance);

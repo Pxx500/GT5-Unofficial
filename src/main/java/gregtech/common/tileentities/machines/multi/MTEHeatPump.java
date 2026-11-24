@@ -25,20 +25,10 @@ import gregtech.api.interfaces.ITexture;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.implementations.MTEEnhancedMultiBlockBase;
-import gregtech.api.metatileentity.implementations.integratedfluid.FluidThermalProperties;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNBufferedDualOutputProcess;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNBufferedSingleOutputProcess;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNBufferedSplitOutputProcess;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNHeatExchangerPlanner;
+import gregtech.api.metatileentity.implementations.integratedfluid.IFNAmbientTemperature;
+import gregtech.api.metatileentity.implementations.integratedfluid.IFNNetworkTransferGate;
 import gregtech.api.metatileentity.implementations.integratedfluid.IFNHeatPumpHatchLayout;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNHeatPumpMachineWorkPlan;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNMachineBatchPlanner;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNMachineProcessStatus;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNMachineResultMapper;
 import gregtech.api.metatileentity.implementations.integratedfluid.IFNMachineThermo;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNNormalHeatPumpPlanner;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNPressurePolicy;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNSplitHeatPumpPlanner;
 import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInputHatch;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidOutputHatch;
@@ -51,14 +41,14 @@ import gregtech.common.blocks.BlockCasings2;
 import gregtech.common.gui.modularui.multiblock.MTEHeatPumpGui;
 import gregtech.common.gui.modularui.multiblock.base.MTEMultiBlockBaseGui;
 import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpMachineProcessState;
-import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpOutputBufferDrain;
-import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpOutputPorts;
+
+import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpMachineProcessState.Intake;
+import gregtech.common.tileentities.machines.multi.heatpump.HeatPumpMachineProcessState.Layout;
 
 public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implements ISurvivalConstructable {
 
     private static final String STRUCTURE_PIECE_MAIN = "main";
     private static final int MAX_FLUID_PER_OPERATION = 1000; // Maximum fluid amount per operation (in mB)
-    private static final float AMBIENT_RESERVOIR_TEMPERATURE = 300.0f;
     private static final float DEFAULT_TARGET_TEMPERATURE = 310.0f; // Default target output temperature (310K)
     private static final float DEFAULT_TARGET_COP = 5.0f; // Default COP target
     private static final int DEFAULT_TARGET_ENERGY_PER_TICK = 100; // Default 100 EU/t
@@ -92,7 +82,6 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     // Current calculated values for GUI display
     private float currentCOP = 0.0f;
     private float currentOutputTemperature = 0.0f;
-    private long currentEnergyUsage = 0L;
     private float currentTemperatureDelta = 0.0f; // NEW: for efficiency warnings
     private float currentEfficiencyPenalty = 1.0f; // NEW: shows if penalty is applied
     private float effectiveCOP = 0.0f; // Real COP including penalty (currentCOP / penalty)
@@ -152,7 +141,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
             .addInfo("   Temperature and energy are calculated")
             .addInfo("3) Target Energy - Set energy consumption limit")
             .addInfo("   Temperature and COP are calculated")
-            .addInfo("Processes up to 1000L per tick")
+            .addInfo("Intake is metered in liters at inlet conditions")
             .addInfo("Uses ideal Carnot COP formula")
             .addInfo("Requires Integrated Fluid Input and Output Hatches")
             .addSeparator()
@@ -192,454 +181,102 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         mIntegratedInputHatches.clear();
         mIntegratedOutputHatches.clear();
 
-        return checkPiece(STRUCTURE_PIECE_MAIN, 1, 1, 0) && mCasingAmount >= 18
-            && !mIntegratedInputHatches.isEmpty()
-            && !mIntegratedOutputHatches.isEmpty()
-            && !mEnergyHatches.isEmpty()
-            && !mMaintenanceHatches.isEmpty();
+        boolean valid = checkPiece(STRUCTURE_PIECE_MAIN, 1, 1, 0) && mCasingAmount >= 18
+            && !mIntegratedInputHatches.isEmpty() && !mIntegratedOutputHatches.isEmpty()
+            && !mEnergyHatches.isEmpty() && !mMaintenanceHatches.isEmpty();
+        if (valid) doPeriodicChecks = true;
+        return valid;
     }
 
     @Override
     public @NotNull CheckRecipeResult checkProcessing() {
-        // Output is prepared at recipe start, but stays reserved until all work is paid.
-        if (machineProcessState.hasUnfinishedWork()) {
-            mMaxProgresstime = machineProcessState.remainingWorkTicks();
-            mEUt = -machineProcessState.workEuPerTick();
-            mEfficiency = getMaxEfficiency(null);
-            return CheckRecipeResultRegistry.SUCCESSFUL;
+        if (machineProcessState.awaitingTemperatureChange()) return SimpleCheckRecipeResult.ofFailure("vfn_paired_temperature_limit");
+        Layout layout = activeLayout();
+        boolean paired = layout != Layout.SINGLE, hx = layout == Layout.EXCHANGER;
+        if (!hx && (mIntegratedInputHatches.size() != 1 || mIntegratedOutputHatches.size() != (paired ? 2 : 1)))
+            return CheckRecipeResultRegistry.NO_RECIPE;
+        boolean blue = bluePrimary();
+        int otherColor = blue ? IFNHeatPumpHatchLayout.RED : IFNHeatPumpHatchLayout.BLUE;
+        var inlet = controlledInlet();
+        var otherInlet = hx ? coloredInlet(otherColor) : null;
+        var outlet = controlledOutlet();
+        var otherOutlet = paired ? coloredOutlet(otherColor) : null;
+        if (paired && (outlet == null || otherOutlet == null || outlet == otherOutlet || inlet == otherOutlet
+            || (hx ? otherInlet == null || inlet == otherInlet || outlet == otherInlet : inlet == outlet)))
+            return CheckRecipeResultRegistry.NO_RECIPE;
+        if (machineProcessState.ready()) {
+            if (machineProcessState.discharge(outlet, otherOutlet)) getBaseMetaTileEntity().markDirty();
+            if (machineProcessState.ready()) {
+                return switch (machineProcessState.blockedOutlet(outlet, otherOutlet)) {
+                    case SINGLE -> SimpleCheckRecipeResult.ofFailure("vfn_outlet_head");
+                    case RED -> SimpleCheckRecipeResult.ofFailure("vfn_red_outlet_head");
+                    case BLUE -> SimpleCheckRecipeResult.ofFailure("vfn_blue_outlet_head");
+                    case BOTH -> SimpleCheckRecipeResult.ofFailure("vfn_both_outlet_heads");
+                    case NONE -> CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+                };
+            }
         }
-        CheckRecipeResult pendingOutputResult = pushPendingOutputsForCurrentMode();
-        if (pendingOutputResult != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return pendingOutputResult;
+        if (!machineProcessState.active()) {
+            if (layout != activeLayout() || blue != bluePrimary()) return CheckRecipeResultRegistry.NO_RECIPE;
+            if (!IFNNetworkTransferGate.isOperational(outlet) || (paired && !IFNNetworkTransferGate.isOperational(otherOutlet)))
+                return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+            if (!IFNNetworkTransferGate.isOperational(inlet) || (hx && !IFNNetworkTransferGate.isOperational(otherInlet)))
+                return CheckRecipeResultRegistry.NO_RECIPE;
+            var intake = new Intake(inlet, otherInlet, fluidAmountPerOperation, layout == Layout.SPLIT ? splitRatio : 1, blue);
+            boolean heating = hx ? !blue : targetHeating;
+            boolean admitted;
+            if (operatingMode == HeatPumpMode.TARGET_ENERGY) {
+                admitted = machineProcessState.fillForPower(intake, targetEnergyPerTick, heating);
+            } else if (paired && operatingMode == HeatPumpMode.TARGET_COP) {
+                admitted = machineProcessState.fillForPairedCop(intake, targetCOP, heating);
+            } else {
+                boolean copControl = operatingMode == HeatPumpMode.TARGET_COP;
+                double target = copControl ? IFNMachineThermo.computeReservoirTargetCopOutputTemperature(
+                    IFNAmbientTemperature.getAmbientTemperature(getBaseMetaTileEntity().getWorld()), targetCOP, heating)
+                    : targetTemperature;
+                if (inlet.getAmountQ() > 0 && !inlet.supportsFluidTemperature(target))
+                    return SimpleCheckRecipeResult.ofFailure("awaiting_configuration");
+                boolean directional = hx || copControl;
+                admitted = machineProcessState.fill(intake, target,
+                    directional && !heating ? Double.POSITIVE_INFINITY : lowerTemperatureTolerance,
+                    directional && heating ? Double.POSITIVE_INFINITY : upperTemperatureTolerance);
+            }
+            if (!admitted) return machineProcessState.inletPressureTooLow(intake)
+                ? SimpleCheckRecipeResult.ofFailure("vfn_inlet_head") : CheckRecipeResultRegistry.NO_RECIPE;
         }
-
-        if (splitFlowMode) {
-            return processSplitFlow();
-        } else if (heatExchangerMode) {
-            return processHeatExchanger();
-        } else {
-            return processNormalMode();
-        }
+        getBaseMetaTileEntity().markDirty();
+        mMaxProgresstime = 20;
+        mEfficiency = 10000;
+        mEUt = 0;
+        return CheckRecipeResultRegistry.SUCCESSFUL;
     }
 
     @Override
     public boolean onRunningTick(ItemStack stack) {
-        if (!super.onRunningTick(stack)) {
-            return false;
+        totalEnergyCost = 0;
+        mEUt = 0;
+        if (machineProcessState.active() && !machineProcessState.ready()) {
+            long budget = Math.min(Integer.MAX_VALUE, getMaxInputPower());
+            long available = 0;
+            for (var hatch : mEnergyHatches) {
+                if (hatch.isValid()) available += Math.min(budget - available, hatch.getBaseMetaTileEntity().getStoredEU());
+                if (available == budget) break;
+            }
+            double ambient = IFNAmbientTemperature.getAmbientTemperature(getBaseMetaTileEntity().getWorld());
+            long spent = machineProcessState.advance(ambient, available, this::drainEnergyInput);
+            if (spent > 0) applyHeatPumpMetrics(machineProcessState.metrics());
+            totalEnergyCost = (int) spent;
+            mEUt = -totalEnergyCost;
+            currentOutputTemperature = (float) machineProcessState.temperature();
+            if (machineProcessState.awaitingTemperatureChange()) {
+                getBaseMetaTileEntity().markDirty();
+                mMaxProgresstime = mProgresstime + 1;
+                return true;
+            }
+            if (spent == 0 && !machineProcessState.ready()) return false;
         }
-        machineProcessState.recordPoweredTick();
+        if (!machineProcessState.active() || machineProcessState.ready()) mMaxProgresstime = mProgresstime + 1;
         return true;
-    }
-
-    private CheckRecipeResult pushPendingOutputsForCurrentMode() {
-        if (!machineProcessState.outputBuffer()
-            .hasPendingOutput()) {
-            return CheckRecipeResultRegistry.SUCCESSFUL;
-        }
-
-        HeatPumpOutputBufferDrain.Result result;
-        long maxAmountQ = (long) fluidAmountPerOperation * IntegratedFluidNetwork.AMOUNT_SCALE;
-        if (splitFlowMode) {
-            SplitFlowContext context = selectSplitFlowContext();
-            if (context == null) {
-                return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
-            }
-            result = HeatPumpOutputBufferDrain.push(
-                machineProcessState.outputBuffer(),
-                maxAmountQ,
-                HeatPumpOutputBufferDrain.target(HeatPumpOutputPorts.RED, context.redOutputNetwork),
-                HeatPumpOutputBufferDrain.target(HeatPumpOutputPorts.BLUE, context.blueOutputNetwork));
-        } else if (heatExchangerMode) {
-            HeatExchangerContext context = selectHeatExchangerContext();
-            if (context == null) {
-                return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
-            }
-            result = HeatPumpOutputBufferDrain.push(
-                machineProcessState.outputBuffer(),
-                maxAmountQ,
-                HeatPumpOutputBufferDrain.target(HeatPumpOutputPorts.RED, context.redOutputNetwork),
-                HeatPumpOutputBufferDrain.target(HeatPumpOutputPorts.BLUE, context.blueOutputNetwork));
-        } else {
-            NormalModeContext context = selectNormalModeContext();
-            if (context == null) {
-                return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
-            }
-            result = HeatPumpOutputBufferDrain.push(
-                machineProcessState.outputBuffer(),
-                maxAmountQ,
-                HeatPumpOutputBufferDrain.target(HeatPumpOutputPorts.NORMAL, context.outputNetwork));
-        }
-
-        if (result.outputStillPending()) {
-            return IFNMachineResultMapper.toRecipeResult(IFNMachineProcessStatus.OUTPUT_BLOCKED);
-        }
-        return CheckRecipeResultRegistry.SUCCESSFUL;
-    }
-
-    private @NotNull CheckRecipeResult processSplitFlow() {
-        CheckRecipeResult startResult = validateProcessStart(hasValidSplitFlowHatches());
-        if (startResult != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return startResult;
-        }
-
-        SplitFlowContext context = selectSplitFlowContext();
-        if (context == null) return CheckRecipeResultRegistry.NO_RECIPE;
-
-        CheckRecipeResult networkStatus = IFNMachineResultMapper.requireOperationalNetworks(
-            new IntegratedFluidNetwork[] { context.inputNetwork },
-            new IntegratedFluidNetwork[] { context.redOutputNetwork, context.blueOutputNetwork });
-        if (networkStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return networkStatus;
-        }
-
-        IFNMachineBatchPlanner.NetworkInputBatchPlan inputBatch = IFNMachineBatchPlanner
-            .planNetworkInputBatch(context.inputNetwork, fluidAmountPerOperation);
-        if (!inputBatch.isValid()) return CheckRecipeResultRegistry.NO_RECIPE;
-        Fluid inputFluid = inputBatch.fluid();
-
-        IFNSplitHeatPumpPlanner.Plan plan = IFNSplitHeatPumpPlanner.plan(
-            IFNSplitHeatPumpPlanner.Request.of(
-                operatingMode.toIFNMode(),
-                context.redOutputNetwork,
-                inputFluid,
-                inputBatch.batch(),
-                targetHeating,
-                targetTemperature,
-                targetCOP,
-                targetEnergyPerTick,
-                splitRatio,
-                lowerTemperatureTolerance,
-                upperTemperatureTolerance,
-                AMBIENT_RESERVOIR_TEMPERATURE));
-        CheckRecipeResult planStatus = IFNMachineResultMapper.toRecipeResult(plan.getStatus());
-        if (planStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return planStatus;
-        }
-
-        applyHeatPumpMetrics(plan.getMetrics());
-        long amountToProcessQ = plan.getAmountQ();
-        long energyCost = plan.getEnergyCostEu();
-        long originalAmountToProcessQ = amountToProcessQ;
-        long originalEnergyCost = energyCost;
-        final double requestedHotSpecificEnthalpy = plan.getHotOutputSpecificEnthalpy();
-        final double requestedColdSpecificEnthalpy = plan.getColdOutputSpecificEnthalpy();
-        IFNBufferedSplitOutputProcess.Result processResult = IFNBufferedSplitOutputProcess.execute(
-            IFNBufferedSplitOutputProcess.Request.of(
-                context.inputNetwork,
-                context.redOutputNetwork,
-                machineProcessState.outputBuffer(),
-                HeatPumpOutputPorts.RED,
-                inputFluid,
-                context.blueOutputNetwork,
-                machineProcessState.outputBuffer(),
-                HeatPumpOutputPorts.BLUE,
-                inputFluid,
-                amountToProcessQ,
-                splitRatio,
-                ignored -> requestedHotSpecificEnthalpy,
-                ignored -> requestedColdSpecificEnthalpy,
-                IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
-
-        if (processResult.getStatus() != IFNMachineProcessStatus.SUCCESS) {
-            return IFNMachineResultMapper.toRecipeResult(processResult.getStatus());
-        }
-
-        if (processResult.getAmountQ() != originalAmountToProcessQ && energyCost > 0L) {
-            energyCost = IFNMachineThermo
-                .scaleEnergyCost(originalEnergyCost, originalAmountToProcessQ, processResult.getAmountQ());
-        }
-
-        return finishSuccessfulProcess(energyCost, plan.isPassthrough(), (float) plan.getHotOutputTemperature());
-    }
-
-    private @NotNull CheckRecipeResult processHeatExchanger() {
-        CheckRecipeResult startResult = validateProcessStart(hasValidHeatExchangerHatches());
-        if (startResult != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return startResult;
-        }
-
-        HeatExchangerContext context = selectHeatExchangerContext();
-        if (context == null) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
-        CheckRecipeResult networkStatus = IFNMachineResultMapper.requireOperationalNetworks(
-            new IntegratedFluidNetwork[] { context.redInputNetwork, context.blueInputNetwork },
-            new IntegratedFluidNetwork[] { context.redOutputNetwork, context.blueOutputNetwork });
-        if (networkStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return networkStatus;
-        }
-
-        IFNMachineBatchPlanner.NetworkInputBatchPlan redInputBatch = IFNMachineBatchPlanner
-            .planNetworkInputBatch(context.redInputNetwork, fluidAmountPerOperation);
-        IFNMachineBatchPlanner.NetworkInputBatchPlan blueInputBatch = IFNMachineBatchPlanner
-            .planNetworkInputBatch(context.blueInputNetwork, fluidAmountPerOperation);
-        if (!redInputBatch.isValid() || !blueInputBatch.isValid()) return CheckRecipeResultRegistry.NO_RECIPE;
-        Fluid redFluid = redInputBatch.fluid();
-        Fluid blueFluid = blueInputBatch.fluid();
-
-        IFNHeatExchangerPlanner.Plan plan = IFNHeatExchangerPlanner.plan(
-            IFNHeatExchangerPlanner.Request.of(
-                operatingMode.toIFNMode(),
-                context.redOutputNetwork,
-                context.blueOutputNetwork,
-                redFluid,
-                blueFluid,
-                redInputBatch.batch(),
-                blueInputBatch.batch(),
-                configuringHotStream,
-                targetTemperature,
-                targetCOP,
-                targetEnergyPerTick,
-                lowerTemperatureTolerance,
-                upperTemperatureTolerance));
-        CheckRecipeResult planStatus = IFNMachineResultMapper.toRecipeResult(plan.getStatus());
-        if (planStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return planStatus;
-        }
-
-        applyHeatPumpMetrics(plan.getMetrics());
-        long energyCost = plan.getEnergyCostEu();
-        long originalRedProcessQ = plan.getRedAmountQ();
-        long originalBlueProcessQ = plan.getBlueAmountQ();
-        long originalEnergyCost = energyCost;
-        final double requestedRedOutH = plan.getRedOutputSpecificEnthalpy();
-        final double requestedBlueOutH = plan.getBlueOutputSpecificEnthalpy();
-        IFNBufferedDualOutputProcess.Result processResult = IFNBufferedDualOutputProcess.execute(
-            IFNBufferedDualOutputProcess.Request.of(
-                context.redInputNetwork,
-                context.redOutputNetwork,
-                machineProcessState.outputBuffer(),
-                HeatPumpOutputPorts.RED,
-                redFluid,
-                originalRedProcessQ,
-                context.blueInputNetwork,
-                context.blueOutputNetwork,
-                machineProcessState.outputBuffer(),
-                HeatPumpOutputPorts.BLUE,
-                blueFluid,
-                originalBlueProcessQ,
-                ignored -> requestedRedOutH,
-                ignored -> requestedBlueOutH,
-                IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
-        if (processResult.getStatus() != IFNMachineProcessStatus.SUCCESS) {
-            return IFNMachineResultMapper.toRecipeResult(processResult.getStatus());
-        }
-
-        double ratioRed = processResult.getFirstAmountQ() / (double) originalRedProcessQ;
-        double ratioBlue = processResult.getSecondAmountQ() / (double) originalBlueProcessQ;
-        double finalRatio = Math.min(ratioRed, ratioBlue);
-
-        if (finalRatio < 1.0 && originalEnergyCost > 0L) {
-            long scaledRedEnergy = IFNMachineThermo
-                .scaleEnergyCost(originalEnergyCost, originalRedProcessQ, processResult.getFirstAmountQ());
-            long scaledBlueEnergy = IFNMachineThermo
-                .scaleEnergyCost(originalEnergyCost, originalBlueProcessQ, processResult.getSecondAmountQ());
-            energyCost = Math.min(scaledRedEnergy, scaledBlueEnergy);
-        }
-
-        return finishSuccessfulProcess(energyCost, plan.isPassthrough(), (float) plan.getTargetOutputTemperature());
-    }
-
-    private @NotNull CheckRecipeResult processNormalMode() {
-        CheckRecipeResult startResult = validateProcessStart(!hasTooManyHatchesForNormalMode());
-        if (startResult != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return startResult;
-        }
-
-        NormalModeContext context = selectNormalModeContext();
-        if (context == null) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
-        CheckRecipeResult networkStatus = IFNMachineResultMapper.requireOperationalNetworks(
-            new IntegratedFluidNetwork[] { context.inputNetwork },
-            new IntegratedFluidNetwork[] { context.outputNetwork });
-        if (networkStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return networkStatus;
-        }
-
-        IFNMachineBatchPlanner.NetworkInputBatchPlan inputBatch = IFNMachineBatchPlanner
-            .planNetworkInputBatch(context.inputNetwork, fluidAmountPerOperation);
-        if (!inputBatch.isValid()) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-        Fluid inputFluid = inputBatch.fluid();
-        double inputSpecificEnthalpy = inputBatch.specificEnthalpy();
-        IFNNormalHeatPumpPlanner.Plan plan = IFNNormalHeatPumpPlanner.plan(
-            IFNNormalHeatPumpPlanner.Request.of(
-                operatingMode.toIFNMode(),
-                context.outputNetwork,
-                inputFluid,
-                inputBatch.batch(),
-                targetHeating,
-                targetTemperature,
-                targetCOP,
-                targetEnergyPerTick,
-                lowerTemperatureTolerance,
-                upperTemperatureTolerance,
-                AMBIENT_RESERVOIR_TEMPERATURE));
-        CheckRecipeResult planStatus = IFNMachineResultMapper.toRecipeResult(plan.getStatus());
-        if (planStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return planStatus;
-        }
-
-        applyHeatPumpMetrics(plan.getMetrics());
-        long amountToProcessQ = plan.getAmountQ();
-        long totalEnergyCost = plan.getEnergyCostEu();
-        long originalAmountToProcessQ = amountToProcessQ;
-        boolean targetOutputState = plan.isTargetOutputState();
-        double requestedOutputSpecificEnthalpy = plan.getOutputSpecificEnthalpy();
-        double requestedOutputTemperature = plan.getOutputTemperature();
-        IFNBufferedSingleOutputProcess.Result processResult = IFNBufferedSingleOutputProcess.execute(
-            IFNBufferedSingleOutputProcess.Request.of(
-                context.inputNetwork,
-                context.outputNetwork,
-                machineProcessState.outputBuffer(),
-                HeatPumpOutputPorts.NORMAL,
-                inputFluid,
-                amountToProcessQ,
-                amountQ -> targetOutputState ? IFNMachineThermo.computeTargetSpecificEnthalpyForStateAdd(
-                    context.outputNetwork,
-                    inputFluid,
-                    requestedOutputTemperature,
-                    amountQ) : requestedOutputSpecificEnthalpy,
-                IFNPressurePolicy.MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO));
-
-        if (processResult.getStatus() != IFNMachineProcessStatus.SUCCESS) {
-            return IFNMachineResultMapper.toRecipeResult(processResult.getStatus());
-        }
-
-        amountToProcessQ = processResult.getAmountQ();
-        double outputSpecificEnthalpy = processResult.getOutputSpecificEnthalpy();
-
-        if (amountToProcessQ != originalAmountToProcessQ && totalEnergyCost > 0L) {
-            totalEnergyCost = IFNMachineThermo
-                .scaleEnergyCost(totalEnergyCost, originalAmountToProcessQ, amountToProcessQ);
-        }
-
-        if (targetOutputState) {
-            totalEnergyCost = IFNMachineThermo.computeHeatPumpEnergyCost(
-                inputSpecificEnthalpy,
-                outputSpecificEnthalpy,
-                amountToProcessQ,
-                currentCOP,
-                currentEfficiencyPenalty);
-        }
-
-        float outputTemperature = (float) FluidThermalProperties
-            .getTemperatureFromPH(inputFluid, context.outputNetwork.getPressure(), outputSpecificEnthalpy);
-        return finishSuccessfulProcess(totalEnergyCost, plan.isPassthrough(), outputTemperature);
-    }
-
-    private CheckRecipeResult validateConfiguration() {
-        if (!operatingMode.isConfigurationValid(targetCOP, targetEnergyPerTick)) {
-            return SimpleCheckRecipeResult.ofFailure("awaiting_configuration");
-        }
-        return CheckRecipeResultRegistry.SUCCESSFUL;
-    }
-
-    private CheckRecipeResult validateProcessStart(boolean hasValidHatchLayout) {
-        if (!hasValidHatchLayout) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-        return validateConfiguration();
-    }
-
-    private MTEIntegratedFluidInputHatch getInputHatchByColor(int color) {
-        for (MTEIntegratedFluidInputHatch hatch : mIntegratedInputHatches) {
-            if (hatch.getBaseMetaTileEntity()
-                .getColorization() == color) return hatch;
-        }
-        return null;
-    }
-
-    private MTEIntegratedFluidOutputHatch getOutputHatchByColor(int color) {
-        for (MTEIntegratedFluidOutputHatch hatch : mIntegratedOutputHatches) {
-            if (hatch.getBaseMetaTileEntity()
-                .getColorization() == color) return hatch;
-        }
-        return null;
-    }
-
-    private NormalModeContext selectNormalModeContext() {
-        if (mIntegratedInputHatches.isEmpty() || mIntegratedOutputHatches.isEmpty()) {
-            return null;
-        }
-        return new NormalModeContext(
-            mIntegratedInputHatches.get(0)
-                .getNetwork(),
-            mIntegratedOutputHatches.get(0)
-                .getNetwork());
-    }
-
-    private SplitFlowContext selectSplitFlowContext() {
-        MTEIntegratedFluidOutputHatch redOutput = getOutputHatchByColor(IFNHeatPumpHatchLayout.RED);
-        MTEIntegratedFluidOutputHatch blueOutput = getOutputHatchByColor(IFNHeatPumpHatchLayout.BLUE);
-        if (redOutput == null || blueOutput == null) {
-            return null;
-        }
-        return new SplitFlowContext(
-            mIntegratedInputHatches.get(0)
-                .getNetwork(),
-            redOutput.getNetwork(),
-            blueOutput.getNetwork());
-    }
-
-    private HeatExchangerContext selectHeatExchangerContext() {
-        MTEIntegratedFluidInputHatch redInput = getInputHatchByColor(IFNHeatPumpHatchLayout.RED);
-        MTEIntegratedFluidInputHatch blueInput = getInputHatchByColor(IFNHeatPumpHatchLayout.BLUE);
-        MTEIntegratedFluidOutputHatch redOutput = getOutputHatchByColor(IFNHeatPumpHatchLayout.RED);
-        MTEIntegratedFluidOutputHatch blueOutput = getOutputHatchByColor(IFNHeatPumpHatchLayout.BLUE);
-        if (redInput == null || blueInput == null || redOutput == null || blueOutput == null) {
-            return null;
-        }
-        return new HeatExchangerContext(
-            redInput.getNetwork(),
-            blueInput.getNetwork(),
-            redOutput.getNetwork(),
-            blueOutput.getNetwork());
-    }
-
-    private static final class NormalModeContext {
-
-        private final IntegratedFluidNetwork inputNetwork;
-        private final IntegratedFluidNetwork outputNetwork;
-
-        private NormalModeContext(IntegratedFluidNetwork inputNetwork, IntegratedFluidNetwork outputNetwork) {
-            this.inputNetwork = inputNetwork;
-            this.outputNetwork = outputNetwork;
-        }
-    }
-
-    private static final class SplitFlowContext {
-
-        private final IntegratedFluidNetwork inputNetwork;
-        private final IntegratedFluidNetwork redOutputNetwork;
-        private final IntegratedFluidNetwork blueOutputNetwork;
-
-        private SplitFlowContext(IntegratedFluidNetwork inputNetwork, IntegratedFluidNetwork redOutputNetwork,
-            IntegratedFluidNetwork blueOutputNetwork) {
-            this.inputNetwork = inputNetwork;
-            this.redOutputNetwork = redOutputNetwork;
-            this.blueOutputNetwork = blueOutputNetwork;
-        }
-    }
-
-    private static final class HeatExchangerContext {
-
-        private final IntegratedFluidNetwork redInputNetwork;
-        private final IntegratedFluidNetwork blueInputNetwork;
-        private final IntegratedFluidNetwork redOutputNetwork;
-        private final IntegratedFluidNetwork blueOutputNetwork;
-
-        private HeatExchangerContext(IntegratedFluidNetwork redInputNetwork, IntegratedFluidNetwork blueInputNetwork,
-            IntegratedFluidNetwork redOutputNetwork, IntegratedFluidNetwork blueOutputNetwork) {
-            this.redInputNetwork = redInputNetwork;
-            this.blueInputNetwork = blueInputNetwork;
-            this.redOutputNetwork = redOutputNetwork;
-            this.blueOutputNetwork = blueOutputNetwork;
-        }
     }
 
     @Override
@@ -666,71 +303,44 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
 
     // ===== Helper Methods for GUI =====
     public float getInputTemperature() {
-        if (mIntegratedInputHatches.isEmpty()) return 0.0f;
-        var network = mIntegratedInputHatches.get(0)
-            .getNetwork();
+        var network = controlledInlet();
         return getNetworkTemperature(network);
     }
 
     public float getOutputTemperature() {
-        if (mIntegratedOutputHatches.isEmpty()) return 0.0f;
-        var network = mIntegratedOutputHatches.get(0)
-            .getNetwork();
+        var network = controlledOutlet();
         return getNetworkTemperature(network);
     }
 
-    public int getInputNetworkCapacity() {
-        if (mIntegratedInputHatches.isEmpty()) return 0;
-        var network = mIntegratedInputHatches.get(0)
-            .getNetwork();
-        return network != null ? network.getTotalCapacity() : 0;
+    public long getInputBaseLiters() {
+        var network = controlledInlet();
+        return network == null ? 0 : network.getTopologySnapshot().baseVolume().toWholeLiters();
     }
 
-    public int getInputNetworkStored() {
-        if (mIntegratedInputHatches.isEmpty()) return 0;
-        var network = mIntegratedInputHatches.get(0)
-            .getNetwork();
-        if (network == null) return 0;
-        var fluid = network.getStoredFluid();
-        return fluid != null ? fluid.amount : 0;
+    public long getInputMicroKg() {
+        var network = controlledInlet();
+        return network == null ? 0 : network.getAmountQ();
     }
 
-    public int getOutputNetworkCapacity() {
-        if (mIntegratedOutputHatches.isEmpty()) return 0;
-        var network = mIntegratedOutputHatches.get(0)
-            .getNetwork();
-        return network != null ? network.getTotalCapacity() : 0;
+    public long getOutputBaseLiters() {
+        var network = controlledOutlet();
+        return network == null ? 0 : network.getTopologySnapshot().baseVolume().toWholeLiters();
     }
 
-    public int getOutputNetworkStored() {
-        if (mIntegratedOutputHatches.isEmpty()) return 0;
-        var network = mIntegratedOutputHatches.get(0)
-            .getNetwork();
-        if (network == null) return 0;
-        var fluid = network.getStoredFluid();
-        return fluid != null ? fluid.amount : 0;
+    public long getOutputMicroKg() {
+        var network = controlledOutlet();
+        return network == null ? 0 : network.getAmountQ();
     }
 
     public String getFluidName() {
-        if (mIntegratedInputHatches.isEmpty()) return "";
-        var network = mIntegratedInputHatches.get(0)
-            .getNetwork();
+        var network = controlledInlet();
         if (network == null) return "";
         Fluid fluid = network.getFluid();
         return fluid != null ? fluid.getLocalizedName() : "";
     }
 
     private static float getNetworkTemperature(IntegratedFluidNetwork network) {
-        if (network == null) {
-            return 0.0f;
-        }
-        Fluid fluid = network.getFluid();
-        if (fluid == null || network.getAmountQ() <= 0L) {
-            return 0.0f;
-        }
-        double temperature = FluidThermalProperties
-            .getTemperatureFromPH(fluid, network.getPressure(), network.getSpecificEnthalpy());
-        return (float) temperature;
+        return network == null || network.getAmountQ() == 0 ? 0 : network.getTemperature();
     }
 
     private void applyHeatPumpMetrics(IFNMachineThermo.HeatPumpMetrics metrics) {
@@ -738,25 +348,6 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
         currentTemperatureDelta = (float) metrics.temperatureDelta();
         currentEfficiencyPenalty = metrics.efficiencyPenalty();
         effectiveCOP = metrics.effectiveCop();
-    }
-
-    private CheckRecipeResult finishSuccessfulProcess(long energyCostEu, boolean passthrough, float outputTemperature) {
-        currentEnergyUsage = energyCostEu;
-        currentOutputTemperature = outputTemperature;
-        applyMachineWorkPlan(energyCostEu, passthrough);
-        return CheckRecipeResultRegistry.SUCCESSFUL;
-    }
-
-    private void applyMachineWorkPlan(long energyCostEu, boolean passthrough) {
-        IFNHeatPumpMachineWorkPlan workPlan = IFNHeatPumpMachineWorkPlan
-            .of(passthrough, operatingMode == HeatPumpMode.TARGET_ENERGY, energyCostEu, targetEnergyPerTick);
-        this.totalEnergyCost = workPlan.getEnergyCostPerTick();
-        this.mMaxProgresstime = workPlan.getMaxProgressTime();
-        this.mEUt = workPlan.getEuT();
-        if (workPlan.shouldSetEfficiency()) {
-            this.mEfficiency = workPlan.getEfficiency();
-        }
-        machineProcessState.beginWork(workPlan);
     }
 
     public float getCOP() {
@@ -805,7 +396,14 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     }
 
     public void setTargetTemperatureDelta(float temperature) {
+        if (!Float.isFinite(temperature) || temperature <= 0) return;
         this.targetTemperature = temperature;
+        if (operatingMode != HeatPumpMode.TARGET_TEMPERATURE || !machineProcessState.awaitingTemperatureChange()
+            || configuredLayout() != machineProcessState.layout()
+            || (heatExchangerMode && !configuringHotStream) != machineProcessState.bluePrimary()) return;
+        double lower = heatExchangerMode && !configuringHotStream ? Double.POSITIVE_INFINITY : lowerTemperatureTolerance;
+        double upper = heatExchangerMode && configuringHotStream ? Double.POSITIVE_INFINITY : upperTemperatureTolerance;
+        if (machineProcessState.retargetStalledCharge(temperature, lower, upper)) getBaseMetaTileEntity().markDirty();
     }
 
     // Universal value - interpreted based on operating mode
@@ -823,9 +421,10 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     }
 
     public void setUniversalValue(float value) {
+        if (!Float.isFinite(value)) return;
         switch (operatingMode) {
             case TARGET_TEMPERATURE:
-                this.targetTemperature = value;
+                setTargetTemperatureDelta(value);
                 break;
             case TARGET_COP:
                 this.targetCOP = Math.max(1.1f, Math.min(value, 100.0f));
@@ -867,6 +466,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     }
 
     public void setLowerTemperatureTolerance(float tolerance) {
+        if (!Float.isFinite(tolerance)) return;
         this.lowerTemperatureTolerance = Math.max(0.0f, Math.min(tolerance, 50.0f));
     }
 
@@ -875,6 +475,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     }
 
     public void setUpperTemperatureTolerance(float tolerance) {
+        if (!Float.isFinite(tolerance)) return;
         this.upperTemperatureTolerance = Math.max(0.0f, Math.min(tolerance, 50.0f));
     }
 
@@ -918,6 +519,7 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
     }
 
     public void setSplitRatio(float ratio) {
+        if (!Float.isFinite(ratio)) return;
         this.splitRatio = Math.max(0.1f, Math.min(0.9f, ratio)); // Clamp to 0.1-0.9
     }
 
@@ -995,6 +597,42 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
                 .getColorization();
         }
         return colors;
+    }
+
+    private Layout activeLayout() {
+        return machineProcessState.active() ? machineProcessState.layout() : configuredLayout();
+    }
+
+    private Layout configuredLayout() {
+        return heatExchangerMode ? Layout.EXCHANGER : splitFlowMode ? Layout.SPLIT : Layout.SINGLE;
+    }
+
+    private boolean bluePrimary() {
+        return machineProcessState.active() ? machineProcessState.bluePrimary() : heatExchangerMode && !configuringHotStream;
+    }
+
+    private IntegratedFluidNetwork controlledInlet() {
+        if (activeLayout() == Layout.EXCHANGER) return coloredInlet(bluePrimary() ? IFNHeatPumpHatchLayout.BLUE : IFNHeatPumpHatchLayout.RED);
+        return mIntegratedInputHatches.isEmpty() ? null : mIntegratedInputHatches.get(0).getNetwork();
+    }
+
+    private IntegratedFluidNetwork controlledOutlet() {
+        if (activeLayout() != Layout.SINGLE) return coloredOutlet(bluePrimary() ? IFNHeatPumpHatchLayout.BLUE : IFNHeatPumpHatchLayout.RED);
+        return mIntegratedOutputHatches.isEmpty() ? null : mIntegratedOutputHatches.get(0).getNetwork();
+    }
+
+    private IntegratedFluidNetwork coloredInlet(int color) {
+        for (var hatch : mIntegratedInputHatches) {
+            if (hatch.getBaseMetaTileEntity().getColorization() == color) return hatch.getNetwork();
+        }
+        return null;
+    }
+
+    private IntegratedFluidNetwork coloredOutlet(int color) {
+        for (var hatch : mIntegratedOutputHatches) {
+            if (hatch.getBaseMetaTileEntity().getColorization() == color) return hatch.getNetwork();
+        }
+        return null;
     }
 
     private int[] outputHatchColors() {

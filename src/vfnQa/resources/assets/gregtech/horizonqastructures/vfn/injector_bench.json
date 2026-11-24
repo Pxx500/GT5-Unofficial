@@ -1,0 +1,10 @@
+{
+  "format_version": 2,
+  "size": [7, 2, 7],
+  "palette": {"S": {"name": "minecraft:stonebrick", "meta": 0}},
+  "layers": [
+    ["SSSSSSS", "SSSSSSS", "SSSSSSS", "SSSSSSS", "SSSSSSS", "SSSSSSS", "SSSSSSS"],
+    [".......", ".......", ".......", ".......", ".......", ".......", "......."]
+  ],
+  "annotations": {"labels": {"injector": [3, 1, 4], "storage": [4, 1, 4], "viewer": [2, 1, 1]}}
+}

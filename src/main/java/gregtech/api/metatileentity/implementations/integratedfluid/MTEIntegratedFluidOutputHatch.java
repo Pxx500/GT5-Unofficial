@@ -12,7 +12,6 @@ import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
-import net.minecraftforge.fluids.FluidStack;
 
 import gregtech.api.enums.Dyes;
 import gregtech.api.interfaces.ITexture;
@@ -173,23 +172,7 @@ public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegrat
     public void getWailaNBTData(EntityPlayerMP player, TileEntity tile, NBTTagCompound tag, World world, int x, int y,
         int z) {
         super.getWailaNBTData(player, tile, tag, world, x, y, z);
-        // Send network data to client for WAILA display
-        if (network != null) {
-            tag.setBoolean("hasNetwork", true);
-            IFNWailaFormatter.writeNetworkStatus(network, tag);
-            tag.setInteger("memberCount", network.getMemberCount());
-            tag.setInteger("maxCapacity", network.getMaxCapacity());
-            tag.setInteger("accumulatorCapacity", network.getAccumulatorCapacity());
-            tag.setInteger("totalCapacity", network.getTotalCapacity());
-            tag.setFloat("pressure", network.getPressure());
-            tag.setFloat("temperature", network.getTemperature());
-            FluidStack fluid = network.getStoredFluid();
-            if (fluid != null) {
-                tag.setTag("networkFluid", fluid.writeToNBT(new NBTTagCompound()));
-            }
-        } else {
-            tag.setBoolean("hasNetwork", false);
-        }
+        IFNWailaFormatter.writeNetworkStatus(network, tag);
     }
 
     @Override
@@ -201,16 +184,7 @@ public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegrat
             IFNWailaFormatter.addNetworkStatus(tag, currenttip);
             IFNWailaFormatter.addFluidStorageSummary(tag, currenttip, "Network Fluid", false);
             currenttip.add("Network Members: " + tag.getInteger("memberCount"));
-            currenttip.add(
-                "Pressure: " + EnumChatFormatting.YELLOW
-                    + String.format("%.2f", tag.getFloat("pressure"))
-                    + " bar"
-                    + EnumChatFormatting.RESET);
-            currenttip.add(
-                "Temperature: " + EnumChatFormatting.RED
-                    + String.format("%.1f", tag.getFloat("temperature"))
-                    + " K"
-                    + EnumChatFormatting.RESET);
+            IFNWailaFormatter.addOperatingConditions(tag, currenttip);
         } else {
             currenttip.add(EnumChatFormatting.RED + "No network connected" + EnumChatFormatting.RESET);
         }
@@ -240,11 +214,6 @@ public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegrat
 
     @Override
     public void onNetworkUpdate() {
-        // IMPORTANT: Cap fluid to capacity whenever network is updated
-        if (network != null) {
-            network.capFluidToCapacity();
-        }
-        // Trigger visual updates
         if (getBaseMetaTileEntity() != null) {
             getBaseMetaTileEntity().issueTextureUpdate();
         }
@@ -262,8 +231,8 @@ public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegrat
     }
 
     @Override
-    public double getPassiveHeatConductanceEuPerKelvinPerSecond() {
-        return IntegratedFluidNetwork.HEAT_LOSS_PER_PIPE_PER_SECOND;
+    public double getPassiveConductanceEuPerTickKelvin() {
+        return IntegratedFluidNetwork.PIPE_CONDUCTANCE_EU_PER_TICK_KELVIN;
     }
 
     @Override
@@ -271,50 +240,10 @@ public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegrat
         return IFNPressurePolicy.DEFAULT_MAX_PRESSURE_BAR;
     }
 
-    /**
-     * Drains fluid from the network (for machines to call).
-     *
-     * @param maxDrain The maximum amount to drain
-     * @param simulate If true, only simulates the operation
-     * @return The fluid that was drained
-     */
-    public FluidStack drainFluidFromNetwork(int maxDrain, boolean simulate) {
-        if (network == null) {
-            NetworkManager manager = NetworkManager.getInstance(getBaseMetaTileEntity().getWorld());
-            manager.onMemberAdded(this);
-        }
-        if (IFNNetworkTransferGate.canProvideToMachine(network)) {
-            return network.drainFluid(maxDrain, simulate);
-        }
-        return null;
-    }
-
-    /**
-     * Drains a specific fluid from the network.
-     *
-     * @param fluid    The fluid to drain (must match network fluid)
-     * @param simulate If true, only simulates the operation
-     * @return The fluid that was drained
-     */
-    public FluidStack drainFluidFromNetwork(FluidStack fluid, boolean simulate) {
-        if (network == null) {
-            NetworkManager manager = NetworkManager.getInstance(getBaseMetaTileEntity().getWorld());
-            manager.onMemberAdded(this);
-        }
-        if (IFNNetworkTransferGate.canProvideToMachine(network)) {
-            return network.drainFluid(fluid, simulate);
-        }
-        return null;
-    }
-
-    /**
-     * Gets the current fluid in the network.
-     */
-    public FluidStack getNetworkFluid() {
-        if (network != null) {
-            return network.getStoredFluid();
-        }
-        return null;
+    @Override
+    public void onBlockDestroyed() {
+        NetworkManager.onBlockDestroyed(this, getBaseMetaTileEntity());
+        super.onBlockDestroyed();
     }
 
     @Override

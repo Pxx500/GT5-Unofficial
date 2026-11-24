@@ -14,7 +14,8 @@ public final class CoverIFNTemperatureDetector extends CoverIFNDetectorBase {
 
     @Override
     protected double readValue(IntegratedFluidNetwork network) {
-        return network.getTemperature();
+        var state = network.getSolvedState();
+        return state.isPresent() ? state.get().temperatureKelvin() : Double.NaN;
     }
 
     @Override

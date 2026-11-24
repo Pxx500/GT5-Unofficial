@@ -2,20 +2,19 @@ package gregtech.api.metatileentity.implementations.integratedfluid.state;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.fluids.Fluid;
 
 import gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSupport;
 import gregtech.api.metatileentity.implementations.integratedfluid.IIntegratedFluidMember;
 import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
-import gregtech.api.metatileentity.implementations.integratedfluid.solver.IFNSolvedState;
+import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetworkSavedData;
 
 class IntegratedFluidNetworkCanonicalStateTest {
 
@@ -30,21 +29,29 @@ class IntegratedFluidNetworkCanonicalStateTest {
 
     @Test
     void loadedTraceSubstanceRemainsCanonicalState() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
+        Fluid fluid = IFNTestSupport.waterFluid();
         IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 1000, 0, 100.0f);
 
-        network.loadState(fluid.getName(), 1L, 2L, IntegratedFluidNetwork.DEFAULT_PRESSURE, 0);
+        network.replaceCanonicalState(IFNCanonicalState.fromRaw("water", 1, 2_242_506));
+        var previousWorld = new IntegratedFluidNetworkSavedData();
+        previousWorld.upsertState(network.getNetworkId(), network);
+        var disk = new NBTTagCompound();
+        previousWorld.writeToNBT(disk);
+        var nextWorld = new IntegratedFluidNetworkSavedData();
+        nextWorld.readFromNBT(disk);
+        var restored = new IntegratedFluidNetwork(network.getNetworkId());
+        nextWorld.restoreInto(restored);
 
-        IFNCanonicalState state = network.getCanonicalState();
+        IFNCanonicalState state = restored.getCanonicalState();
         assertFalse(state.isEmpty());
         assertEquals(fluid.getName(), state.fluidId().get());
         assertEquals(1L, state.substanceAmount().rawUnits());
-        assertEquals(2L, state.internalEnergy().rawUnits());
+        assertEquals(2_242_506L, state.totalEnergy().rawUnits());
     }
 
     @Test
     void replaceCanonicalStateCommitsNonEmptyState() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
+        Fluid fluid = IFNTestSupport.waterFluid();
         IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 1000, 0, 100.0f);
 
         network.replaceCanonicalState(IFNCanonicalState.of(
@@ -57,58 +64,75 @@ class IntegratedFluidNetworkCanonicalStateTest {
         assertFalse(state.isEmpty());
         assertEquals(fluid.getName(), state.fluidId().get());
         assertEquals(12L, state.substanceAmount().rawUnits());
-        assertEquals(34L, state.internalEnergy().rawUnits());
+        assertEquals(34L, state.totalEnergy().rawUnits());
+    }
+
+    @Test
+    void unsupportedSubstanceCannotAcquireWaterPropertiesEvenAfterReload() {
+        var network = new IntegratedFluidNetwork();
+        network.addMember(new FixedCapacityMember(1000));
+        var foreign = IFNCanonicalState.fromRaw("unknown_test_substance", 1_000_000, 2_242_506_000_000L);
+        network.replaceCanonicalState(foreign);
+        assertTrue(network.getSolvedState().isEmpty());
+        assertEquals(IFNNetworkStatus.FROZEN, network.getNetworkStatus());
+
+        var data = new IntegratedFluidNetworkSavedData();
+        data.upsertState(network.getNetworkId(), network);
+        var disk = new NBTTagCompound();
+        data.writeToNBT(disk);
+        var next = new IntegratedFluidNetworkSavedData();
+        next.readFromNBT(disk);
+        var restored = new IntegratedFluidNetwork(network.getNetworkId());
+        next.restoreInto(restored);
+        restored.addMember(new FixedCapacityMember(1000));
+        assertTrue(restored.getSolvedState().isEmpty());
+        assertEquals(IFNNetworkStatus.FROZEN, restored.getNetworkStatus());
+        assertEquals("unknown_test_substance", restored.getFluidName());
+        assertEquals(foreign.totalEnergy().rawUnits(), restored.getCanonicalState().totalEnergy().rawUnits());
+        assertEquals(foreign.substanceAmount().rawUnits(), restored.getAmountQ());
     }
 
     @Test
     void replaceCanonicalStateWithEmptyClearsNetwork() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
+        Fluid fluid = IFNTestSupport.waterFluid();
         IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 1000, 0, 100.0f);
-        network.loadState(fluid.getName(), 10L, 20L, IntegratedFluidNetwork.DEFAULT_PRESSURE, 0);
+        IFNTestSupport.restoreDrySteamAt475K(network, 1);
+        assertTrue(network.getAmountQ() > 0);
 
         network.replaceCanonicalState(IFNCanonicalState.empty());
 
         assertTrue(network.getCanonicalState().isEmpty());
         assertEquals(0L, network.getAmountQ());
-        assertEquals(0L, network.getEnthalpyQ());
+        assertEquals(0L, network.getCanonicalState().totalEnergy().rawUnits());
     }
 
     @Test
-    void solvedStateCacheIsReusedUntilCanonicalStateChanges() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 1000, 0, 100.0f);
-        network.loadState(fluid.getName(), 10L * IntegratedFluidNetwork.AMOUNT_SCALE,
-            3000L * IntegratedFluidNetwork.ENTHALPY_SCALE, IntegratedFluidNetwork.DEFAULT_PRESSURE, 0);
-
-        IFNSolvedState first = network.getSolvedState();
-
-        assertSame(first, network.getSolvedState());
-
-        network.replaceCanonicalState(IFNCanonicalState.of(
-            fluid.getName(),
-            gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount.fromRawUnits(
-                12L * IntegratedFluidNetwork.AMOUNT_SCALE),
-            gregtech.api.metatileentity.implementations.integratedfluid.amount.EnergyAmount.fromRawUnits(
-                3600L * IntegratedFluidNetwork.ENTHALPY_SCALE)
-        ));
-
-        IFNSolvedState afterMutation = network.getSolvedState();
-        assertNotSame(first, afterMutation);
-        assertEquals(12L * IntegratedFluidNetwork.AMOUNT_SCALE, afterMutation.amountQ());
+    void previousReadoutIsUnchangedWhenTheInventoryChanges() {
+        var network = IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), 1000, 0, 100);
+        IFNTestSupport.restoreDrySteamAt475K(network, 1);
+        var first = network.getSolvedState().orElseThrow();
+        long mass = network.getAmountQ();
+        IFNTestSupport.restoreDrySteamAt475K(network, 2);
+        var next = network.getSolvedState().orElseThrow();
+        assertEquals(1, first.pressurePa() / 100000, 0.00001);
+        assertEquals(2, next.pressurePa() / 100000, 0.00001);
+        assertEquals(2 * mass, network.getAmountQ(), 1L);
     }
 
     @Test
-    void solvedStateCacheInvalidatesWhenTopologyChanges() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 1000, 0, 100.0f);
-        network.loadState(fluid.getName(), 10L * IntegratedFluidNetwork.AMOUNT_SCALE,
-            3000L * IntegratedFluidNetwork.ENTHALPY_SCALE, IntegratedFluidNetwork.DEFAULT_PRESSURE, 0);
-        IFNSolvedState first = network.getSolvedState();
-
+    void addingEmptyPipeReducesPressureWithoutChangingTheLedger() {
+        var network = IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), 1000, 0, 100);
+        IFNTestSupport.restoreDrySteamAt475K(network, 3);
+        var first = network.getSolvedState().orElseThrow();
+        long mass = network.getAmountQ();
+        long energy = network.getCanonicalState().totalEnergy().rawUnits();
         network.addMember(new FixedCapacityMember(2000));
-
-        IFNSolvedState afterTopologyChange = network.getSolvedState();
-        assertNotSame(first, afterTopologyChange);
+        var expanded = network.getSolvedState().orElseThrow();
+        assertEquals(3, first.pressurePa() / 100000, 0.00001);
+        assertEquals(1, expanded.pressurePa() / 100000, 0.00001);
+        assertEquals(3000, network.getOccupiedVolume(), 0.00001);
+        assertEquals(mass, network.getAmountQ());
+        assertEquals(energy, network.getCanonicalState().totalEnergy().rawUnits());
     }
 
     private static final class FixedCapacityMember implements IIntegratedFluidMember {

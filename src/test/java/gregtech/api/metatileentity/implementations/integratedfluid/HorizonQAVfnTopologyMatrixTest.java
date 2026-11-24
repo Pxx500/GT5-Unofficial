@@ -5,7 +5,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import gregtech.api.metatileentity.implementations.integratedfluid.HorizonQAVfnScenario.ScenarioMember;
-import gregtech.api.metatileentity.implementations.integratedfluid.HorizonQAVfnScenario.SeededFluid;
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 class HorizonQAVfnTopologyMatrixTest {
 
@@ -65,7 +65,7 @@ class HorizonQAVfnTopologyMatrixTest {
 
     @Test
     void mixedCapacityPipeSplitAndMergePreservesStoredFluid() {
-        HorizonQAVfnScenario scenario = HorizonQAVfnScenario.create();
+        HorizonQAVfnScenario scenario = HorizonQAVfnScenario.create(IFNTestSupport.waterFluid());
         ScenarioMember narrow = scenario.pipe("narrow-pipe", 1000);
         ScenarioMember medium = scenario.pipe("medium-pipe", 2000);
         ScenarioMember wide = scenario.pipe("wide-pipe", 3000);
@@ -74,7 +74,7 @@ class HorizonQAVfnTopologyMatrixTest {
         scenario.connectChain(narrow, medium, wide);
         scenario.addNetworkFrom(narrow);
         scenario.assertSingleNetwork(members, 3);
-        SeededFluid fluid = scenario.seedFluid(narrow, 6L, 300.0d);
+        IFNCanonicalState fluid = scenario.chargeWater(narrow, 6);
 
         scenario.disconnect(medium, wide);
         scenario.changedAt(medium);

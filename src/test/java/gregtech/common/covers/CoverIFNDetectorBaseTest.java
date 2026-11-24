@@ -17,13 +17,13 @@ class CoverIFNDetectorBaseTest {
     @Test
     void detectorCoverOnIntegratedFluidPipeUsesPipeNetwork() {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
-        network.setPressure(5.0F);
 
         BaseMetaPipeEntity pipeTile = new BaseMetaPipeEntity();
         MTEIntegratedFluidPipe pipe = new MTEIntegratedFluidPipe("ifn_detector_test_pipe");
         pipeTile.setMetaTileEntity(pipe);
         pipe.setBaseMetaTileEntity(pipeTile);
-        pipe.setNetwork(network);
+        network.addMember(pipe);
+        gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSupport.restoreDrySteamAt475K(network, 5);
 
         TestDetectorCover cover = new TestDetectorCover(pipeTile);
 

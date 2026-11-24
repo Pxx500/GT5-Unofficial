@@ -9,7 +9,8 @@ import net.minecraft.nbt.NBTTagList;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldSavedData;
 import net.minecraft.world.storage.MapStorage;
-import net.minecraftforge.fluids.Fluid;
+
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 public class IntegratedFluidNetworkSavedData extends WorldSavedData {
 
@@ -19,11 +20,13 @@ public class IntegratedFluidNetworkSavedData extends WorldSavedData {
     private static final String TAG_ID_LEAST = "IdLeast";
     private static final String TAG_EXPECTED = "ExpectedMembers";
     private static final String TAG_FLUID_NAME = "FluidName";
-    private static final String TAG_AMOUNT_Q = "AmountQ";
-    private static final String TAG_ENTHALPY_Q = "EnthalpyQ";
+    private static final String TAG_AMOUNT_Q = "MassMicroKg";
+    private static final String TAG_ENERGY_Q = "TotalMicroEu";
     private static final String TAG_FROZEN_REASON = "FrozenReason";
-    private static final String TAG_TEMPERATURE_OLD = "Temperature";
-    private static final String TAG_FLUID_OLD = "Fluid";
+    private static final String BASE_LITERS = "ChamberBaseLiters";
+    private static final String STROKE_LITERS = "ChamberStrokeLiters";
+    private static final String FORMAT = "ChamberFormat";
+    private boolean unsupportedFormat;
 
     private final Map<UUID, NetworkState> networks = new HashMap<>();
 
@@ -47,21 +50,29 @@ public class IntegratedFluidNetworkSavedData extends WorldSavedData {
     }
 
     public NetworkState getState(UUID id) {
+        requireSupportedFormat();
         return networks.get(id);
     }
 
+    public void restoreInto(IntegratedFluidNetwork network) {
+        NetworkState state = getState(network.getNetworkId());
+        if (state != null) network.loadInventory(state.inventory, state.expectedMemberCount, state.baseLiters, state.strokeLiters, state.frozenReason);
+    }
+
     public void upsertState(UUID id, IntegratedFluidNetwork network) {
+        requireSupportedFormat();
         if (id == null || network == null) return;
         NetworkState state = networks.computeIfAbsent(id, ignored -> new NetworkState());
         state.expectedMemberCount = network.getExpectedMemberCount();
-        state.fluidName = network.getFluidName();
-        state.amountQ = network.getAmountQ();
-        state.enthalpyQ = network.getEnthalpyQ();
+        state.inventory = network.getCanonicalState();
+        state.baseLiters = network.chamberBaseLiters();
+        state.strokeLiters = network.chamberStrokeLiters();
         state.frozenReason = network.getFrozenReason();
         markDirty();
     }
 
     public void removeState(UUID id) {
+        requireSupportedFormat();
         if (id == null) return;
         networks.remove(id);
         markDirty();
@@ -69,6 +80,8 @@ public class IntegratedFluidNetworkSavedData extends WorldSavedData {
 
     @Override
     public void readFromNBT(NBTTagCompound nbt) {
+        unsupportedFormat = !nbt.hasKey(FORMAT, 3) || nbt.getInteger(FORMAT) != 2 || !nbt.hasKey(TAG_NETWORKS, 9);
+        if (unsupportedFormat) return;
         networks.clear();
         NBTTagList list = nbt.getTagList(TAG_NETWORKS, 10);
         for (int i = 0; i < list.tagCount(); i++) {
@@ -78,38 +91,33 @@ public class IntegratedFluidNetworkSavedData extends WorldSavedData {
             UUID id = new UUID(most, least);
             NetworkState state = new NetworkState();
             state.expectedMemberCount = entry.getInteger(TAG_EXPECTED);
-            state.fluidName = entry.hasKey(TAG_FLUID_NAME) ? entry.getString(TAG_FLUID_NAME) : null;
-            state.amountQ = entry.getLong(TAG_AMOUNT_Q);
-            state.enthalpyQ = entry.getLong(TAG_ENTHALPY_Q);
-            state.frozenReason = entry.hasKey(TAG_FROZEN_REASON) ? entry.getString(TAG_FROZEN_REASON) : null;
-            if (state.fluidName == null && entry.hasKey(TAG_FLUID_OLD)) {
-                migrateLegacyFluidStack(entry, state);
+            state.baseLiters = entry.getLong(BASE_LITERS);
+            state.strokeLiters = entry.getLong(STROKE_LITERS);
+            String fluid = entry.getString(TAG_FLUID_NAME);
+            long amount = entry.getLong(TAG_AMOUNT_Q);
+            if (!entry.hasKey(TAG_ID_MOST, 4) || !entry.hasKey(TAG_ID_LEAST, 4)
+                || !entry.hasKey(BASE_LITERS, 4) || !entry.hasKey(STROKE_LITERS, 4) || state.baseLiters < 0 || state.strokeLiters < 0
+                || !entry.hasKey(TAG_AMOUNT_Q, 4) || !entry.hasKey(TAG_ENERGY_Q, 4) || networks.containsKey(id)
+                || amount < 0 || (amount > 0 ? fluid.trim().isEmpty() : !fluid.isEmpty() || entry.getLong(TAG_ENERGY_Q) != 0)) {
+                unsupportedFormat = true;
+                return;
             }
+            if (amount > 0) {
+                state.inventory = IFNCanonicalState.fromRaw(fluid, amount, entry.getLong(TAG_ENERGY_Q));
+            }
+            state.frozenReason = entry.hasKey(TAG_FROZEN_REASON) ? entry.getString(TAG_FROZEN_REASON) : null;
             networks.put(id, state);
         }
     }
 
-    private static void migrateLegacyFluidStack(NBTTagCompound entry, NetworkState state) {
-        NBTTagCompound legacy = entry.getCompoundTag(TAG_FLUID_OLD);
-        String fluidName = legacy.getString(TAG_FLUID_NAME);
-        int amount = legacy.getInteger("Amount");
-        if (fluidName == null || fluidName.trim().isEmpty() || amount <= 0) {
-            return;
-        }
-
-        state.fluidName = fluidName;
-        state.amountQ = (long) amount * IntegratedFluidNetwork.AMOUNT_SCALE;
-        float temperature = entry.hasKey(TAG_TEMPERATURE_OLD)
-            ? entry.getFloat(TAG_TEMPERATURE_OLD)
-            : IntegratedFluidNetwork.DEFAULT_TEMPERATURE;
-        Fluid legacyFluid = new Fluid(fluidName);
-        double specific = IntegratedFluidThermoModel.specificEnthalpyFromTemperature(legacyFluid, temperature);
-        long energyQ = (long) Math.round(specific * amount * IntegratedFluidNetwork.ENTHALPY_SCALE);
-        state.enthalpyQ = energyQ;
+    private void requireSupportedFormat() {
+        if (unsupportedFormat) throw new IllegalStateException("Unsupported VFN storage format: use a fresh test world. Existing data was not migrated.");
     }
 
     @Override
     public void writeToNBT(NBTTagCompound nbt) {
+        requireSupportedFormat();
+        nbt.setInteger(FORMAT, 2);
         NBTTagList list = new NBTTagList();
         for (Map.Entry<UUID, NetworkState> entry : networks.entrySet()) {
             UUID id = entry.getKey();
@@ -118,11 +126,13 @@ public class IntegratedFluidNetworkSavedData extends WorldSavedData {
             tag.setLong(TAG_ID_MOST, id.getMostSignificantBits());
             tag.setLong(TAG_ID_LEAST, id.getLeastSignificantBits());
             tag.setInteger(TAG_EXPECTED, state.expectedMemberCount);
-            if (state.fluidName != null) {
-                tag.setString(TAG_FLUID_NAME, state.fluidName);
+            tag.setLong(BASE_LITERS, state.baseLiters);
+            tag.setLong(STROKE_LITERS, state.strokeLiters);
+            if (!state.inventory.isEmpty()) {
+                tag.setString(TAG_FLUID_NAME, state.inventory.fluidId().get());
             }
-            tag.setLong(TAG_AMOUNT_Q, state.amountQ);
-            tag.setLong(TAG_ENTHALPY_Q, state.enthalpyQ);
+            tag.setLong(TAG_AMOUNT_Q, state.inventory.substanceAmount().rawUnits());
+            tag.setLong(TAG_ENERGY_Q, state.inventory.totalEnergy().rawUnits());
             if (state.frozenReason != null && !state.frozenReason.trim().isEmpty()) {
                 tag.setString(TAG_FROZEN_REASON, state.frozenReason);
             }
@@ -132,10 +142,10 @@ public class IntegratedFluidNetworkSavedData extends WorldSavedData {
     }
 
     public static class NetworkState {
-        String fluidName;
-        long amountQ = 0L;
-        long enthalpyQ = 0L;
+        IFNCanonicalState inventory = IFNCanonicalState.empty();
         String frozenReason;
         int expectedMemberCount = 0;
+        long baseLiters;
+        long strokeLiters;
     }
 }

@@ -18,7 +18,7 @@ class NetworkManagerSafetyTickTest {
 
         manager.onMemberAdded(pipe);
         IntegratedFluidNetwork network = pipe.network;
-        network.setPressure(12.0f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 12.0f);
 
         manager.onWorldTick(1L);
 
@@ -119,7 +119,7 @@ class NetworkManagerSafetyTickTest {
         private int heatLossCalls;
 
         @Override
-        public void applyHeatLoss(float ambientTemperature) {
+        public void exchangeAmbientHeat(float ambientKelvin, long worldTick, int elapsedTicks) {
             heatLossCalls++;
         }
     }

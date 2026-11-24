@@ -11,9 +11,9 @@ class SubstanceAmountTest {
 
     @Test
     void oneGtLiterConvertsToOneReferenceLiter() {
-        SubstanceAmount amount = SubstanceAmount.fromRefLiters(1);
+        SubstanceAmount amount = SubstanceAmount.fromKilograms(1);
 
-        assertEquals(1, amount.toWholeRefLiters());
+        assertEquals(1, amount.toWholeKilograms());
         assertEquals(SubstanceAmount.SCALE, amount.rawUnits());
     }
 
@@ -46,7 +46,7 @@ class SubstanceAmountTest {
     void refLiterFactoryRejectsOverflow() {
         long overflowingRefLiters = Long.MAX_VALUE / SubstanceAmount.SCALE + 1L;
 
-        assertThrows(ArithmeticException.class, () -> SubstanceAmount.fromRefLiters(overflowingRefLiters));
+        assertThrows(ArithmeticException.class, () -> SubstanceAmount.fromKilograms(overflowingRefLiters));
     }
 
     @Test

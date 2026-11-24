@@ -76,9 +76,9 @@ public interface IIntegratedFluidMember {
     }
 
     /**
-     * Returns this member's passive heat exchange conductance in EU/(K*s).
+     * Returns this member's passive heat exchange conductance in EU/(tick K).
      */
-    default double getPassiveHeatConductanceEuPerKelvinPerSecond() {
+    default double getPassiveConductanceEuPerTickKelvin() {
         return 0.0d;
     }
 }

@@ -4,10 +4,7 @@ import static gregtech.api.enums.Textures.BlockIcons.OVERLAY_PIPE_IN;
 import static gregtech.api.enums.Textures.BlockIcons.OVERLAY_PIPE_OUT;
 
 import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.tileentity.TileEntity;
-import net.minecraftforge.common.util.ForgeDirection;
 
 import com.gtnewhorizons.modularui.api.math.Alignment;
 import com.gtnewhorizons.modularui.api.math.Color;
@@ -18,16 +15,15 @@ import com.gtnewhorizons.modularui.common.widget.DrawableWidget;
 import com.gtnewhorizons.modularui.common.widget.TextWidget;
 import com.gtnewhorizons.modularui.common.widget.textfield.TextFieldWidget;
 
+import gregtech.api.metatileentity.implementations.integratedfluid.amount.VolumeAmount;
 import gregtech.api.enums.Dyes;
 import gregtech.api.gui.modularui.GTUITextures;
 import gregtech.api.interfaces.ITexture;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
-import gregtech.api.metatileentity.MetaPipeEntity;
-import gregtech.api.metatileentity.implementations.MTEHatch;
 import gregtech.api.render.TextureFactory;
 
-public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
+public class MTEIntegratedFluidPressureRegulator extends MTEIntegratedFluidBoundary {
 
     private static final String TAG_SETPOINT_PRESSURE_BAR = "ifnRegulatorSetpointPressureBar";
     private static final String TAG_OVERSHOOT_TOLERANCE_BAR = "ifnRegulatorOvershootToleranceBar";
@@ -35,7 +31,7 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
 
     static final float DEFAULT_SETPOINT_PRESSURE_BAR = 1.0f;
     static final float DEFAULT_OVERSHOOT_TOLERANCE_BAR = 0.05f;
-    static final long DEFAULT_MAX_PACKET_AMOUNT_Q = 100L * IntegratedFluidNetwork.AMOUNT_SCALE;
+    static final long DEFAULT_MAX_PACKET_AMOUNT_Q = 100L * VolumeAmount.SCALE;
     private static final int GUI_PRESSURE_SCALE_CENTIBAR = 100;
     private static final int GUI_MIN_CENTIBAR = 1;
     private static final int GUI_MAX_CENTIBAR = 1_000_000;
@@ -52,7 +48,6 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
             aName,
             aNameRegional,
             aTier,
-            0,
             new String[] { "Integrated Fluid Pressure Regulator",
                 "Boundary block between two Integrated Fluid Networks",
                 "Transfers from back side to front side only below set pressure",
@@ -61,7 +56,7 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
 
     public MTEIntegratedFluidPressureRegulator(String aName, int aTier, String[] aDescription,
         ITexture[][][] aTextures) {
-        super(aName, aTier, 0, aDescription, aTextures);
+        super(aName, aTier, aDescription, aTextures);
     }
 
     @Override
@@ -84,53 +79,14 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
     }
 
     @Override
-    public boolean isFacingValid(ForgeDirection facing) {
-        return true;
+    void onContact(IntegratedFluidNetwork back, IntegratedFluidNetwork front) {
+        transferBetweenNetworks(back, front);
     }
 
-    @Override
-    public boolean isAccessAllowed(EntityPlayer aPlayer) {
-        return true;
-    }
-
-    @Override
-    public boolean isValidSlot(int aIndex) {
-        return false;
-    }
-
-    @Override
-    public boolean allowPullStack(IGregTechTileEntity aBaseMetaTileEntity, int aIndex, ForgeDirection side,
-        ItemStack aStack) {
-        return false;
-    }
-
-    @Override
-    public boolean allowPutStack(IGregTechTileEntity aBaseMetaTileEntity, int aIndex, ForgeDirection side,
-        ItemStack aStack) {
-        return false;
-    }
-
-    @Override
-    public void onPostTick(IGregTechTileEntity aBaseMetaTileEntity, long aTick) {
-        super.onPostTick(aBaseMetaTileEntity, aTick);
-        if (!aBaseMetaTileEntity.isServerSide() || aTick % 20 != 0) {
-            return;
-        }
-
-        ForgeDirection outputSide = aBaseMetaTileEntity.getFrontFacing();
-        IntegratedFluidNetwork inputNetwork = getAdjacentNetwork(aBaseMetaTileEntity, outputSide.getOpposite());
-        IntegratedFluidNetwork outputNetwork = getAdjacentNetwork(aBaseMetaTileEntity, outputSide);
-        transferBetweenNetworks(inputNetwork, outputNetwork);
-    }
-
-    public IFNPressureRegulatorTransferPlanner.Plan transferBetweenNetworks(IntegratedFluidNetwork inputNetwork,
-        IntegratedFluidNetwork outputNetwork) {
-        return IFNPressureRegulatorTransferExecutor.transfer(
-            inputNetwork,
-            outputNetwork,
-            setpointPressureBar,
-            overshootToleranceBar,
-            maxPacketAmountQ);
+    long transferBetweenNetworks(IntegratedFluidNetwork inputNetwork, IntegratedFluidNetwork outputNetwork) {
+        if (inputNetwork == null || outputNetwork == null || outputNetwork.getPressure() >= setpointPressureBar) return 0;
+        double ceilingPa = ((double) setpointPressureBar + overshootToleranceBar) * 100_000;
+        return inputNetwork.meterTo(outputNetwork, maxPacketAmountQ, ceilingPa);
     }
 
     @Override
@@ -196,11 +152,11 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
     }
 
     public int getMaxPacketAmountL() {
-        return (int) Math.min(Integer.MAX_VALUE, maxPacketAmountQ / IntegratedFluidNetwork.AMOUNT_SCALE);
+        return (int) Math.min(Integer.MAX_VALUE, maxPacketAmountQ / VolumeAmount.SCALE);
     }
 
     public void setMaxPacketAmountL(int liters) {
-        setMaxPacketAmountQ((long) liters * IntegratedFluidNetwork.AMOUNT_SCALE);
+        setMaxPacketAmountQ((long) liters * VolumeAmount.SCALE);
     }
 
     private void clampConfiguration() {
@@ -214,9 +170,15 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
         }
         overshootToleranceBar = Math.max(0.0f, overshootToleranceBar);
 
-        if (maxPacketAmountQ < IntegratedFluidNetwork.AMOUNT_SCALE) {
-            maxPacketAmountQ = IntegratedFluidNetwork.AMOUNT_SCALE;
+        if (maxPacketAmountQ < VolumeAmount.SCALE) {
+            maxPacketAmountQ = VolumeAmount.SCALE;
         }
+    }
+
+    @Override
+    public boolean onRightclick(IGregTechTileEntity tile, EntityPlayer player) {
+        openGui(player);
+        return true;
     }
 
     @Override
@@ -278,26 +240,6 @@ public class MTEIntegratedFluidPressureRegulator extends MTEHatch {
         } catch (NumberFormatException ignored) {
             return fallback;
         }
-    }
-
-    private IntegratedFluidNetwork getAdjacentNetwork(IGregTechTileEntity baseTile, ForgeDirection side) {
-        TileEntity neighbor = baseTile.getTileEntityAtSide(side);
-        if (!(neighbor instanceof IGregTechTileEntity gtNeighbor)) {
-            return null;
-        }
-        IMetaTileEntity neighborMTE = gtNeighbor.getMetaTileEntity();
-        if (!(neighborMTE instanceof IIntegratedFluidMember member)) {
-            return null;
-        }
-        if (neighborMTE instanceof MetaPipeEntity) {
-            return member.getNetwork();
-        }
-
-        IGregTechTileEntity neighborBaseTile = neighborMTE.getBaseMetaTileEntity();
-        if (neighborBaseTile != null && neighborBaseTile.getFrontFacing() == side.getOpposite()) {
-            return member.getNetwork();
-        }
-        return null;
     }
 
     private interface IntGetter {

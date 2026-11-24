@@ -14,8 +14,7 @@ public final class IFNPressurePolicy {
 
     public static final float MACHINE_OUTPUT_TO_INPUT_PRESSURE_RATIO = 1.00f;
 
-    public static final float INJECTOR_TARGET_PRESSURE_BAR = 0.99f;
-    public static final float INJECTOR_PRESSURE_EPSILON_BAR = 0.01f;
+    static final int FORGE_PRESSURE_MARGIN_PA = 10_000;
 
     public static final int TRANSFER_SEARCH_ITERATIONS = 35;
     public static final int TARGET_ENTHALPY_CORRECTION_PASSES = 4;
@@ -35,6 +34,6 @@ public final class IFNPressurePolicy {
     }
 
     public static float injectorCutoffPressureBar() {
-        return INJECTOR_TARGET_PRESSURE_BAR + INJECTOR_PRESSURE_EPSILON_BAR;
+        return 1.0f - FORGE_PRESSURE_MARGIN_PA / 100_000.0f;
     }
 }

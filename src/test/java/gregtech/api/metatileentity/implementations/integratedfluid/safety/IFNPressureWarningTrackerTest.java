@@ -61,14 +61,14 @@ class IFNPressureWarningTrackerTest {
     }
 
     private static IFNPressureLimitEvaluation normal() {
-        return IFNPressureLimitEvaluation.evaluate(10.0d, IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f), false);
+        return IFNPressureLimitEvaluation.evaluate(10.0d, IFNOperationalLimits.ofMaxPressureBar(10.0f), false);
     }
 
     private static IFNPressureLimitEvaluation warning() {
-        return IFNPressureLimitEvaluation.evaluate(10.5d, IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f), false);
+        return IFNPressureLimitEvaluation.evaluate(10.5d, IFNOperationalLimits.ofMaxPressureBar(10.0f), false);
     }
 
     private static IFNPressureLimitEvaluation rupture() {
-        return IFNPressureLimitEvaluation.evaluate(11.0d, IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f), false);
+        return IFNPressureLimitEvaluation.evaluate(11.0d, IFNOperationalLimits.ofMaxPressureBar(10.0f), false);
     }
 }

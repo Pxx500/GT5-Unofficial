@@ -9,6 +9,7 @@ import java.util.Random;
 
 import org.junit.jupiter.api.Test;
 
+import gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSupport;
 import gregtech.api.metatileentity.implementations.integratedfluid.IIntegratedFluidMember;
 import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
 
@@ -29,7 +30,7 @@ class IFNSafetyEvaluatorTest {
     void readOnlyEvaluationDoesNotAdvanceWarningTicks() {
         IntegratedFluidNetwork network = new IntegratedFluidNetwork();
         network.addMember(member(1000, 10.0f, 1200.0f));
-        network.setPressure(10.5f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 10.5);
 
         IFNOperationalSafetyEvaluation evaluation = IFNSafetyEvaluator.evaluate(network);
 
@@ -41,7 +42,7 @@ class IFNSafetyEvaluatorTest {
     @Test
     void ruptureRuntimeUsesInjectedRandom() {
         IFNOperationalSafetyEvaluation evaluation = new IFNOperationalSafetyEvaluation(
-            IFNPressureLimitEvaluation.evaluate(10.5d, IFNOperationalLimits.ofAccumulatorMaxPressureBar(10.0f), false),
+            IFNPressureLimitEvaluation.evaluate(10.5d, IFNOperationalLimits.ofMaxPressureBar(10.0f), false),
             IFNTemperatureLimitEvaluation.evaluate(300.0d, 1000.0f, false),
             true,
             false);

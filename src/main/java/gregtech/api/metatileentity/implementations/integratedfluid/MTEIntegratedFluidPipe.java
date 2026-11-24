@@ -16,7 +16,6 @@ import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.StatCollector;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
-import net.minecraftforge.fluids.FluidStack;
 
 import gregtech.GTMod;
 import gregtech.api.enums.Dyes;
@@ -44,17 +43,37 @@ import mcp.mobius.waila.api.IWailaDataAccessor;
 public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegratedFluidMember {
 
     public static final float THICKNESS = 0.375F;
+    public static final short REINFORCED_ID = 5780;
+
+    public enum Wall {
+        STANDARD((int) IFNPressurePolicy.DEFAULT_MAX_PRESSURE_BAR, 1), REINFORCED(350, 4);
+
+        final int pressureBar, casing;
+
+        Wall(int pressureBar, int casing) {
+            this.pressureBar = pressureBar;
+            this.casing = casing;
+        }
+    }
+
+    private final Wall wall;
 
     private IntegratedFluidNetwork network;
     private java.util.UUID networkId;
     private long lastConnectionUpdateTick = -1L;
 
-    public MTEIntegratedFluidPipe(int aID, String aName, String aNameRegional) {
+    public MTEIntegratedFluidPipe(int aID, String aName, String aNameRegional, Wall wall) {
         super(aID, aName, 0, false);
+        this.wall = wall;
     }
 
     public MTEIntegratedFluidPipe(String aName) {
+        this(aName, Wall.STANDARD);
+    }
+
+    private MTEIntegratedFluidPipe(String aName, Wall wall) {
         super(aName, 0);
+        this.wall = wall;
     }
 
     @Override
@@ -64,7 +83,7 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
 
     @Override
     public IMetaTileEntity newMetaEntity(IGregTechTileEntity aTileEntity) {
-        return new MTEIntegratedFluidPipe(mName);
+        return new MTEIntegratedFluidPipe(mName, wall);
     }
 
     @Override
@@ -73,13 +92,13 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
         // Use a simple machine casing texture with a colored overlay to distinguish from regular pipes
         if (active) {
             // Connected side - show the "active" texture
-            return new ITexture[] { TextureFactory.of(Textures.BlockIcons.MACHINE_CASINGS[1][colorIndex + 1]),
+            return new ITexture[] { TextureFactory.of(Textures.BlockIcons.MACHINE_CASINGS[wall.casing][colorIndex + 1]),
                 TextureFactory.of(
                     Textures.BlockIcons.OVERLAY_PIPE_IN,
                     Dyes.getModulation(colorIndex, new short[] { 64, 192, 255, 255 })) };
         } else {
             // End cap or unconnected
-            return new ITexture[] { TextureFactory.of(MACHINE_CASINGS[1][colorIndex + 1]) };
+            return new ITexture[] { TextureFactory.of(MACHINE_CASINGS[wall.casing][colorIndex + 1]) };
         }
     }
 
@@ -223,6 +242,9 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
         // Can connect to other integrated fluid pipes and hatches
         if (tileEntity instanceof IGregTechTileEntity gtTile) {
             IMetaTileEntity mte = gtTile.getMetaTileEntity();
+            if (mte instanceof MTEIntegratedFluidBoundary boundary) {
+                return boundary.acceptsNetworkOn(side.getOpposite(), gtTile.getFrontFacing());
+            }
             if (mte instanceof IIntegratedFluidMember) {
                 if (mte instanceof MetaPipeEntity) {
                     IIntegratedFluidMember pipeMember = (IIntegratedFluidMember) mte;
@@ -259,44 +281,18 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
 
     @Override
     public String[] getDescription() {
-        return new String[] { "Integrated Fluid Pipe", "Connects Integrated Fluid Hatches in a network",
-            "Each pipe adds 100L of capacity", "Each hatch adds 10,000L of capacity" + EnumChatFormatting.GRAY };
+        return new String[] { "Connects VFN pipes and hatches", "Internal volume: 100 L",
+            "Working pressure limit: " + wall.pressureBar + " bar" };
     }
 
     @Override
     public void getWailaNBTData(EntityPlayerMP player, TileEntity tile, NBTTagCompound tag, World world, int x, int y,
         int z) {
         super.getWailaNBTData(player, tile, tag, world, x, y, z);
-        // Send network data to client for WAILA display
+        IFNWailaFormatter.writeNetworkStatus(network, tag);
         if (network != null) {
-            tag.setBoolean("hasNetwork", true);
-            IFNWailaFormatter.writeNetworkStatus(network, tag);
-            tag.setInteger("memberCount", network.getMemberCount());
             tag.setInteger("pipeCount", network.getPipeCount());
-            tag.setInteger("maxCapacity", network.getMaxCapacity());
-            tag.setInteger("accumulatorCapacity", network.getAccumulatorCapacity());
-            tag.setInteger("totalCapacity", network.getTotalCapacity());
-            tag.setFloat("pressure", network.getPressure());
-            tag.setFloat("temperature", network.getTemperature());
-            float ambientTemperature = IFNAmbientTemperature.getAmbientTemperature(world);
-            tag.setFloat("ambientTemperature", ambientTemperature);
-            double ambientSpecificEnthalpy = 0.0d;
-            FluidStack fluid = network.getStoredFluid();
-            if (fluid != null) {
-                ambientSpecificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(
-                    fluid.getFluid(),
-                    network.getPressure(),
-                    ambientTemperature
-                );
-            }
-            tag.setDouble("specificEnthalpyRelative", network.getSpecificEnthalpy() - ambientSpecificEnthalpy);
-            tag.setDouble("quality", network.getQuality());
-            tag.setDouble("occupiedVolume", network.getOccupiedVolume());
-            if (fluid != null) {
-                tag.setTag("networkFluid", fluid.writeToNBT(new NBTTagCompound()));
-            }
-        } else {
-            tag.setBoolean("hasNetwork", false);
+            if (tag.hasKey("temperature")) tag.setDouble("specificEnthalpy", network.getSpecificEnthalpy());
         }
     }
 
@@ -309,64 +305,17 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
             IFNWailaFormatter.addFluidStorageSummary(tag, currenttip, "Fluid", true);
             currenttip.add("Network Members: " + tag.getInteger("memberCount"));
 
-            // Display current heat loss based on actual temperature difference
-            int pipeCount = tag.getInteger("pipeCount");
-            float temperature = tag.getFloat("temperature");
-            float ambientTemperature = tag.getFloat("ambientTemperature");
-            if (ambientTemperature <= 0.0f) {
-                ambientTemperature = 300.0f;
-            }
-            float temperatureDelta = Math.abs(temperature - ambientTemperature);
-            float currentHeatLoss = pipeCount * temperatureDelta;
-
             currenttip.add(
                 "Pipes in Network: " + EnumChatFormatting.GRAY
-                    + pipeCount
+                    + tag.getInteger("pipeCount")
                     + EnumChatFormatting.RESET);
 
-            if (temperatureDelta > 0.1f) {
-                currenttip.add(
-                    "Current Heat Loss: " + EnumChatFormatting.DARK_RED
-                        + String.format("%.1f", currentHeatLoss)
-                        + " EU/s"
-                        + EnumChatFormatting.RESET
-                        + " (dT=" + String.format("%.1f", temperatureDelta) + "K)");
-            } else {
-                currenttip.add(
-                    "Current Heat Loss: " + EnumChatFormatting.GREEN
-                        + "0 EU/s"
-                        + EnumChatFormatting.RESET
-                        + " (at ambient temp)");
-            }
-
-            currenttip.add(
-                "Pressure: " + EnumChatFormatting.YELLOW
-                    + String.format("%.2f", tag.getFloat("pressure"))
-                    + " bar"
-                    + EnumChatFormatting.RESET);
-            currenttip.add(
-                "Temperature: " + EnumChatFormatting.RED
-                    + String.format("%.2f", tag.getFloat("temperature"))
-                    + " K"
-                    + EnumChatFormatting.RESET);
-            currenttip.add(
+            IFNWailaFormatter.addOperatingConditions(tag, currenttip);
+            if (tag.hasKey("specificEnthalpy")) currenttip.add(
                 "Specific Enthalpy: " + EnumChatFormatting.AQUA
-                    + String.format("%.2f", tag.getDouble("specificEnthalpyRelative"))
-                    + " EU/u"
+                    + String.format("%.2f", tag.getDouble("specificEnthalpy"))
+                    + " EU/kg"
                     + EnumChatFormatting.RESET);
-            String phase = tag.getString("phase");
-            double quality = tag.getDouble("quality");
-            if ("TWO_PHASE".equals(phase)) {
-                currenttip.add(
-                    "Phase: " + EnumChatFormatting.LIGHT_PURPLE
-                        + "Two-Phase"
-                        + EnumChatFormatting.RESET
-                        + " (x="
-                        + String.format("%.2f", quality)
-                        + ")");
-            } else if (phase != null && !phase.isEmpty()) {
-                currenttip.add("Phase: " + EnumChatFormatting.LIGHT_PURPLE + phase + EnumChatFormatting.RESET);
-            }
         } else {
             currenttip.add(EnumChatFormatting.RED + "No network" + EnumChatFormatting.RESET);
         }
@@ -395,12 +344,7 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
     }
 
     @Override
-    public void onNetworkUpdate() {
-        // IMPORTANT: Cap fluid to capacity whenever network is updated
-        if (network != null) {
-            network.capFluidToCapacity();
-        }
-    }
+    public void onNetworkUpdate() {}
 
     @Override
     public int getCapacityContribution() {
@@ -409,8 +353,8 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
     }
 
     @Override
-    public double getPassiveHeatConductanceEuPerKelvinPerSecond() {
-        return IntegratedFluidNetwork.HEAT_LOSS_PER_PIPE_PER_SECOND;
+    public double getPassiveConductanceEuPerTickKelvin() {
+        return IntegratedFluidNetwork.PIPE_CONDUCTANCE_EU_PER_TICK_KELVIN;
     }
 
     @Override
@@ -418,6 +362,17 @@ public class MTEIntegratedFluidPipe extends MetaPipeEntity implements IIntegrate
         return true;
     }
 
+    @Override
+    public float getMaxPressureDifferentialBar() {
+        return wall.pressureBar;
+    }
+
+
+    @Override
+    public void onBlockDestroyed() {
+        NetworkManager.onBlockDestroyed(this, getBaseMetaTileEntity());
+        super.onBlockDestroyed();
+    }
 
     @Override
     public void onRemoval() {

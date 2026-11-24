@@ -34,7 +34,7 @@ class IFNNetworkTransferGateTest {
 
         assertTrue(IFNNetworkTransferGate.canInjectFromGtPipe(network));
 
-        network.setPressure(IFNPressurePolicy.injectorCutoffPressureBar() + 0.01f);
+        IFNTestSupport.restoreDrySteamAt475K(network, IFNPressurePolicy.injectorCutoffPressureBar() + 0.01f);
 
         assertFalse(IFNNetworkTransferGate.canInjectFromGtPipe(network));
     }

@@ -1,11 +1,9 @@
 package gregtech.api.metatileentity.implementations.integratedfluid.amount;
 
-import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
-
 /** A signed energy quantity relative to the fluid model's reference state. */
 public final class EnergyAmount implements Comparable<EnergyAmount> {
 
-    public static final long SCALE = IntegratedFluidNetwork.ENTHALPY_SCALE;
+    public static final long SCALE = 1_000_000L;
     public static final EnergyAmount ZERO = new EnergyAmount(0L);
 
     private final long rawUnits;

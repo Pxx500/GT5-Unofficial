@@ -18,7 +18,7 @@ class IFNCanonicalStateTest {
         assertTrue(state.isEmpty());
         assertFalse(state.fluidId().isPresent());
         assertEquals(0L, state.substanceAmount().rawUnits());
-        assertEquals(0L, state.internalEnergy().rawUnits());
+        assertEquals(0L, state.totalEnergy().rawUnits());
     }
 
     @Test
@@ -31,20 +31,20 @@ class IFNCanonicalStateTest {
 
         assertTrue(state.isEmpty());
         assertFalse(state.fluidId().isPresent());
-        assertEquals(0L, state.internalEnergy().rawUnits());
+        assertEquals(0L, state.totalEnergy().rawUnits());
     }
 
     @Test
     void nonEmptyStatePreservesFluidSubstanceAndEnergy() {
         IFNCanonicalState state = IFNCanonicalState.of(
             "water",
-            SubstanceAmount.fromRefLiters(10),
+            SubstanceAmount.fromKilograms(10),
             EnergyAmount.fromEu(250)
         );
 
         assertFalse(state.isEmpty());
         assertEquals("water", state.fluidId().get());
-        assertEquals(10, state.substanceAmount().toWholeRefLiters());
-        assertEquals(250, state.internalEnergy().toWholeEu());
+        assertEquals(10, state.substanceAmount().toWholeKilograms());
+        assertEquals(250, state.totalEnergy().toWholeEu());
     }
 }

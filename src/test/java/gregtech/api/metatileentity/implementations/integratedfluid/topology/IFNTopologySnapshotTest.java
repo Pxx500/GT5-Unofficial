@@ -23,6 +23,11 @@ class IFNTopologySnapshotTest {
         assertEquals(10100, snapshot.baseVolume().toWholeLiters());
         assertEquals(5000, snapshot.accumulatorVolume().toWholeLiters());
         assertEquals(15100, snapshot.totalVolume().toWholeLiters());
+        var chamber = snapshot.chamberVolume().orElseThrow();
+        assertEquals(10100, chamber.litersAtPressure(0));
+        assertEquals(10100, chamber.litersAtPressure(100_000));
+        assertEquals(12600, chamber.litersAtPressure(550_000));
+        assertEquals(15100, chamber.litersAtPressure(2_000_000));
     }
 
     @Test
@@ -49,6 +54,15 @@ class IFNTopologySnapshotTest {
         );
 
         assertTrue(snapshot.incomplete());
+        assertTrue(snapshot.chamberVolume().isEmpty());
+    }
+
+    @Test
+    void injectorAloneDoesNotCreatePhysicalSpace() {
+        assertTrue(IFNTopologySnapshot.fromMembers(Arrays.asList(member(0, 0)), 1).chamberVolume().isEmpty());
+        var pipe = IFNTopologySnapshot.fromMembers(Arrays.asList(member(100, 0)), 1).chamberVolume().orElseThrow();
+        assertEquals(100, pipe.litersAtPressure(0));
+        assertEquals(100, pipe.litersAtPressure(1_000_000));
     }
 
     private static IIntegratedFluidMember member(int capacity, int accumulator) {

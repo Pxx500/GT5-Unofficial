@@ -83,7 +83,7 @@ class IFNStateDistributorTest {
     private static long[] rawEnergy(IFNCanonicalState[] shares) {
         long[] raw = new long[shares.length];
         for (int i = 0; i < shares.length; i++) {
-            raw[i] = shares[i].internalEnergy().rawUnits();
+            raw[i] = shares[i].totalEnergy().rawUnits();
         }
         return raw;
     }

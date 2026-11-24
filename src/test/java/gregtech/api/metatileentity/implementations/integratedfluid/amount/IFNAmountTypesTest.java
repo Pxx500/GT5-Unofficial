@@ -29,7 +29,7 @@ class IFNAmountTypesTest {
 
         assertDoesNotThrow(() -> EnergyAmount.fromEu(largeNetworkSize));
         assertDoesNotThrow(() -> VolumeAmount.fromLiters(largeNetworkSize));
-        assertDoesNotThrow(() -> SubstanceAmount.fromRefLiters(largeNetworkSize));
+        assertDoesNotThrow(() -> SubstanceAmount.fromKilograms(largeNetworkSize));
         assertDoesNotThrow(() -> Pressure.fromBar(1_000_000.0d));
         assertDoesNotThrow(() -> Temperature.fromKelvin(1_000_000.0d));
     }
@@ -38,7 +38,7 @@ class IFNAmountTypesTest {
     void negativePlayerUnitFactoriesAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> EnergyAmount.fromEu(-1L));
         assertThrows(IllegalArgumentException.class, () -> VolumeAmount.fromLiters(-1L));
-        assertThrows(IllegalArgumentException.class, () -> SubstanceAmount.fromRefLiters(-1L));
+        assertThrows(IllegalArgumentException.class, () -> SubstanceAmount.fromKilograms(-1L));
         assertThrows(IllegalArgumentException.class, () -> Pressure.fromBar(-1.0d));
         assertThrows(IllegalArgumentException.class, () -> Temperature.fromKelvin(-1.0d));
     }
@@ -47,6 +47,6 @@ class IFNAmountTypesTest {
     void overflowingIntegerUnitFactoriesAreRejected() {
         assertThrows(ArithmeticException.class, () -> EnergyAmount.fromEu(Long.MAX_VALUE));
         assertThrows(ArithmeticException.class, () -> VolumeAmount.fromLiters(Long.MAX_VALUE));
-        assertThrows(ArithmeticException.class, () -> SubstanceAmount.fromRefLiters(Long.MAX_VALUE));
+        assertThrows(ArithmeticException.class, () -> SubstanceAmount.fromKilograms(Long.MAX_VALUE));
     }
 }

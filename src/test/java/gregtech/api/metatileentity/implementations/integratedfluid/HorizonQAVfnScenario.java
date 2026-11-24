@@ -18,6 +18,10 @@ import java.util.UUID;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.fluids.Fluid;
 
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.ClosedFluidChamber;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.PureFluid;
+
 final class HorizonQAVfnScenario {
 
     private static final int PIPE_CAPACITY = 1000;
@@ -95,13 +99,18 @@ final class HorizonQAVfnScenario {
         manager.onConnectionChanged(member);
     }
 
-    SeededFluid seedFluid(ScenarioMember member, long refLiters, double specificEnthalpy) {
-        IntegratedFluidNetwork network = member.getNetwork();
+    IFNCanonicalState chargeWater(ScenarioMember member, int kilograms) {
+        var network = member.getNetwork();
         assertNotNull(network, member.name);
-        long amountQ = refLiters * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(specificEnthalpy, amountQ);
-        assertTrue(network.addState(fluid, amountQ, enthalpyQ));
-        return new SeededFluid(amountQ, enthalpyQ);
+        assertTrue(network.getCanonicalState().isEmpty());
+        var geometry = network.getTopologySnapshot().chamberVolume().orElseThrow();
+        var filled = IFNForgeFluidProfile.WATER.admit(ClosedFluidChamber.empty(PureFluid.water(), geometry), kilograms, 300);
+        assertEquals(kilograms, filled.units());
+        var chamber = filled.chamber();
+        var initial = IFNCanonicalState.fromRaw("water", chamber.massKg().movePointRight(6).longValueExact(),
+            chamber.totalEnergyEu().movePointRight(6).longValueExact());
+        network.replaceCanonicalState(initial);
+        return initial;
     }
 
     void assertSingleNetwork(List<ScenarioMember> members, int expectedMembers) {
@@ -129,20 +138,20 @@ final class HorizonQAVfnScenario {
         }
     }
 
-    void assertNetworkGroups(List<ScenarioMember> members, int expectedGroups, SeededFluid expectedFluid) {
+    void assertNetworkGroups(List<ScenarioMember> members, int expectedGroups, IFNCanonicalState expectedFluid) {
         assertNetworkGroups(members, expectedGroups);
         assertTotals(members, expectedFluid);
     }
 
-    void assertTotals(List<ScenarioMember> members, SeededFluid expectedFluid) {
+    void assertTotals(List<ScenarioMember> members, IFNCanonicalState expectedFluid) {
         long actualAmountQ = 0L;
-        long actualEnthalpyQ = 0L;
+        long actualEnergy = 0L;
         for (IntegratedFluidNetwork network : networksOf(members)) {
             actualAmountQ += network.getAmountQ();
-            actualEnthalpyQ += network.getEnthalpyQ();
+            actualEnergy += network.getCanonicalState().totalEnergy().rawUnits();
         }
-        assertEquals(expectedFluid.amountQ, actualAmountQ);
-        assertEquals(expectedFluid.enthalpyQ, actualEnthalpyQ);
+        assertEquals(expectedFluid.substanceAmount().rawUnits(), actualAmountQ);
+        assertEquals(expectedFluid.totalEnergy().rawUnits(), actualEnergy);
     }
 
     Set<IntegratedFluidNetwork> networksOf(List<ScenarioMember> members) {
@@ -172,17 +181,6 @@ final class HorizonQAVfnScenario {
             member.setNetwork(null);
         }
         manager.onMemberAdded(seed);
-    }
-
-    static final class SeededFluid {
-
-        final long amountQ;
-        final long enthalpyQ;
-
-        private SeededFluid(long amountQ, long enthalpyQ) {
-            this.amountQ = amountQ;
-            this.enthalpyQ = enthalpyQ;
-        }
     }
 
     static final class ScenarioMember implements IIntegratedFluidMember {

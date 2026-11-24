@@ -1,197 +1,185 @@
 package gregtech.api.metatileentity.implementations.integratedfluid;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import java.util.UUID;
-
-import net.minecraft.nbt.NBTTagCompound;
-import net.minecraftforge.fluids.Fluid;
+import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import gregtech.api.metatileentity.implementations.integratedfluid.fluid.IFNFluidRegistry;
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
-import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNStateDistributor;
 
 class IFNConservationTest {
 
+    @Test
+    void unrepresentableIncomingEnergyLeavesBothChambersUnchanged() {
+        var source = chamber(1000);
+        IFNTestSupport.restoreDrySteamAt475K(source, 12);
+        var receiver = chamber(1_000_000_000);
+        long almostFull = Long.MAX_VALUE - 10;
+        long mass = almostFull / 2_242_506;
+        receiver.replaceCanonicalState(IFNCanonicalState.fromRaw("water", mass, almostFull));
+        long sourceMass = source.getAmountQ(), sourceEnergy = energy(source);
+        assertTrue(source.getPressurePa() > receiver.getPressurePa());
+        assertEquals(0, source.meterTo(receiver, 10_000_000L, Double.MAX_VALUE));
+        assertEquals(sourceMass, source.getAmountQ());
+        assertEquals(sourceEnergy, energy(source));
+        assertEquals(mass, receiver.getAmountQ());
+        assertEquals(almostFull, energy(receiver));
+
+        long withRoom = almostFull - 1_000_000_000_000L;
+        receiver.replaceCanonicalState(IFNCanonicalState.fromRaw("water", mass, withRoom));
+        long moved = source.meterTo(receiver, 10_000_000L, Double.MAX_VALUE);
+        assertTrue(moved > 0);
+        assertEquals(mass + moved, receiver.getAmountQ());
+        assertEquals(sourceEnergy - energy(source), energy(receiver) - withRoom);
+    }
+
     @ParameterizedTest
     @ValueSource(ints = { 1, 10, 100 })
-    void closedGasCirculationCannotCreateEnergyRegardlessOfPacketSize(int packetLiters) {
-        Fluid gas = IFNTestSupport.vaporFluid();
-        IntegratedFluidNetwork first = IFNTestSupport.newNetwork(gas, 10_000, 0, 20.0f);
-        IntegratedFluidNetwork second = IFNTestSupport.newNetwork(gas, 10_000, 0, 20.0f);
-        long totalAmountQ = 100L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long totalEnthalpyQ = 30_000L * IntegratedFluidNetwork.ENTHALPY_SCALE;
-        assertTrue(first.addState(gas, totalAmountQ, totalEnthalpyQ));
-
-        for (int cycle = 0; cycle < 10; cycle++) {
-            for (int direction = 0; direction < 2; direction++) {
-                IntegratedFluidNetwork source = direction == 0 ? first : second;
-                IntegratedFluidNetwork destination = direction == 0 ? second : first;
-                while (source.getAmountQ() > 0L) {
-                    IntegratedFluidNetwork.ExtractedPayload payload = source
-                        .extractProportional(packetLiters * IntegratedFluidNetwork.AMOUNT_SCALE, false);
-                    assertTrue(destination.add(gas, payload.amountQ, payload.enthalpyQ));
-                    assertEquals(totalAmountQ, first.getAmountQ() + second.getAmountQ());
-                    assertEquals(totalEnthalpyQ, first.getEnthalpyQ() + second.getEnthalpyQ());
-                }
-            }
-            assertEquals(300.0d, first.getDerivedTemperature(), 0.001d);
+    void reversingCirculationOnlyAddsOrRemovesReservoirHeat(int packetLiters) {
+        var a = chamber(10_000);
+        var b = chamber(10_000);
+        IFNTestSupport.restoreDrySteamAt475K(a, 1);
+        IFNTestSupport.restoreDrySteamAt475K(b, 1);
+        long mass = a.getAmountQ() + b.getAmountQ();
+        long expectedEnergy = energy(a) + energy(b);
+        for (int stroke = 0; stroke < 20; stroke++) {
+            var source = stroke % 2 == 0 ? a : b;
+            var receiver = stroke % 2 == 0 ? b : a;
+            expectedEnergy += contact(source, 490) + contact(receiver, 450);
+            long sourceBefore = source.getAmountQ(), receivedBefore = receiver.getAmountQ();
+            long moved = source.meterTo(receiver, packetLiters * 1_000_000L, Double.MAX_VALUE);
+            assertTrue(moved > 0 && source.getPressurePa() >= receiver.getPressurePa());
+            assertEquals(sourceBefore - moved, source.getAmountQ());
+            assertEquals(receivedBefore + moved, receiver.getAmountQ());
+            assertEquals(mass, a.getAmountQ() + b.getAmountQ());
+            assertEquals(expectedEnergy, energy(a) + energy(b));
         }
     }
 
-    @Test
-    void extractionKeepsFractionalSubstanceUntilItIsTransferred() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 100, 0, 20.0f);
-        long halfLiterQ = IntegratedFluidNetwork.AMOUNT_SCALE / 2;
-        long amountQ = 5 * halfLiterQ;
-        assertTrue(network.addState(fluid, amountQ, IntegratedFluidNetwork.toEnthalpyQFromSpecific(300.0d, amountQ)));
-
-        IntegratedFluidNetwork.ExtractedPayload drained = network.extractProportional(4 * halfLiterQ, false);
-        assertEquals(4 * halfLiterQ, drained.amountQ);
-        assertEquals(halfLiterQ, network.getAmountQ());
-        assertEquals(150L * IntegratedFluidNetwork.ENTHALPY_SCALE, network.getEnthalpyQ());
-        IntegratedFluidNetwork.ExtractedPayload preview = network.extractProportional(halfLiterQ, true);
-        assertEquals(halfLiterQ, preview.amountQ);
-        assertEquals(halfLiterQ, network.getAmountQ());
-
-        assertTrue(network.addState(fluid, halfLiterQ, 150L * IntegratedFluidNetwork.ENTHALPY_SCALE));
-        IntegratedFluidNetwork.ExtractedPayload last = network.extractProportional(2 * halfLiterQ, false);
-        assertEquals(2 * halfLiterQ, last.amountQ);
-        assertEquals(300L * IntegratedFluidNetwork.ENTHALPY_SCALE, last.enthalpyQ);
-        assertEquals(0L, network.getAmountQ());
-        assertEquals(0L, network.getEnthalpyQ());
+    private static long contact(IntegratedFluidNetwork network, double kelvin) {
+        double initialK = network.getSolvedState().orElseThrow().temperatureKelvin();
+        long before = energy(network);
+        network.exchangeThroughRadiator(kelvin, 1e9, kelvin);
+        assertEquals(kelvin, network.getTemperature(), 0.001);
+        long heat = energy(network) - before;
+        // For dry steam in a rigid chamber the reservoir supplies m * cv * deltaT
+        assertEquals(network.getAmountQ() * (2010 - 461.5) * (kelvin - initialK), (double) heat, 5);
+        return heat;
     }
 
     @Test
-    void liquidNitrogenRetainsTemperatureThroughNetworkSnapshot() {
-        IFNFluidRegistry.init();
-        Fluid nitrogen = new Fluid("nitrogen");
-        IntegratedFluidNetwork original = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        IntegratedFluidNetwork restored = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        long amountQ = 10L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        // Registered nitrogen: h = 2 * (70 K - 273.15 K), for ten reference liters.
-        long enthalpyQ = -4063L * IntegratedFluidNetwork.ENTHALPY_SCALE;
-        assertTrue(original.addState(nitrogen, amountQ, enthalpyQ));
-
-        restored.restoreSnapshot(original.snapshotState());
-
-        assertEquals(amountQ, restored.getAmountQ());
-        assertEquals(enthalpyQ, restored.getEnthalpyQ());
-        assertEquals(70.0d, restored.getDerivedTemperature(), 0.001d);
+    void fractionalTransferDoesNotRoundEitherChamberToWholeKilograms() {
+        var source = chamber(1000);
+        var receiver = chamber(1000);
+        IFNTestSupport.restoreDrySteamAt475K(source, 2);
+        IFNTestSupport.restoreDrySteamAt475K(receiver, 1);
+        long initial = source.getAmountQ(), previous = receiver.getAmountQ();
+        long totalEnergy = energy(source) + energy(receiver);
+        long moved = source.meterTo(receiver, 10_000_000L, Double.MAX_VALUE);
+        assertEquals(initial / 100, moved);
+        assertTrue(moved > 0 && moved < 1_000_000);
+        assertEquals(initial - moved, source.getAmountQ());
+        assertEquals(previous + moved, receiver.getAmountQ());
+        assertEquals(totalEnergy, energy(source) + energy(receiver));
     }
 
     @Test
-    void coldStateSurvivesTopologySplitMergeAndPersistenceWithoutCreatingEnergy() {
-        IFNFluidRegistry.init();
-        Fluid nitrogen = new Fluid("nitrogen");
-        IntegratedFluidNetwork original = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        long amountQ = 10L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = -4063L * IntegratedFluidNetwork.ENTHALPY_SCALE - 1L;
-        assertTrue(original.addState(nitrogen, amountQ, enthalpyQ));
+    void frozenWaterRetainsItsColdStateAfterUnequalSplitMergeAndWorldSave() {
+        var scenario = HorizonQAVfnScenario.create(IFNTestSupport.waterFluid());
+        var small = scenario.pipe("small", 100);
+        var large = scenario.pipe("large", 200);
+        scenario.connect(small, large);
+        scenario.addNetworkFrom(small);
+        var original = small.getNetwork();
+        var members = scenario.members(small, large);
+        coldWater(original, 250);
+        long coldEnergy = energy(original);
+        assertTrue(coldEnergy < 0 && original.getSolvedState().orElseThrow().solidMassFraction() > 0.99);
 
-        IFNCanonicalState[] parts = IFNStateDistributor
-            .splitStateByWeights(original.getCanonicalState(), new long[] { 1L, 2L });
-        IntegratedFluidNetwork first = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        IntegratedFluidNetwork second = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        first.replaceCanonicalState(parts[0]);
-        second.replaceCanonicalState(parts[1]);
-        first.merge(second);
-
-        UUID id = new UUID(10L, 20L);
-        IntegratedFluidNetworkSavedData saved = new IntegratedFluidNetworkSavedData();
-        saved.upsertState(id, first);
-        NBTTagCompound tag = new NBTTagCompound();
-        saved.writeToNBT(tag);
-        IntegratedFluidNetworkSavedData loaded = new IntegratedFluidNetworkSavedData();
-        loaded.readFromNBT(tag);
-        IntegratedFluidNetworkSavedData.NetworkState state = loaded.getState(id);
-        IntegratedFluidNetwork restored = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        restored.loadState(state.fluidName, state.amountQ, state.enthalpyQ, 1.0f, state.expectedMemberCount);
-
-        assertEquals(amountQ, restored.getAmountQ());
-        assertEquals(enthalpyQ, restored.getEnthalpyQ());
-        assertEquals(70.0d, restored.getDerivedTemperature(), 0.001d);
+        scenario.disconnect(small, large);
+        scenario.changedAt(small);
+        scenario.assertNetworkGroups(members, 2);
+        assertEquals(3_000_000L, small.getNetwork().getAmountQ());
+        assertEquals(6_000_000L, large.getNetwork().getAmountQ());
+        assertEquals(coldEnergy, energy(small.getNetwork()) + energy(large.getNetwork()));
+        scenario.connect(small, large);
+        scenario.changedAt(small);
+        scenario.roundTripSavedDataAndReloadFrom(small, members);
+        assertTrue(small.getNetwork().isPending());
+        assertEquals(coldEnergy, energy(small.getNetwork()));
+        scenario.addNetworkFrom(large);
+        scenario.assertSingleNetwork(members, 2);
+        var restored = large.getNetwork();
+        assertEquals(9_000_000L, restored.getAmountQ());
+        assertEquals(coldEnergy, energy(restored));
+        assertEquals(250, restored.getTemperature(), 0.001);
+        assertTrue(restored.getSolvedState().orElseThrow().solidMassFraction() > 0.99);
     }
 
     @Test
-    void repeatedRejectedColdTransfersDoNotHeatTheInput() {
-        IFNFluidRegistry.init();
-        Fluid nitrogen = new Fluid("nitrogen");
-        IntegratedFluidNetwork input = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        IntegratedFluidNetwork output = IFNTestSupport.newNetwork(nitrogen, 100, 0, 20.0f);
-        output.freeze("blocked output");
-        long amountQ = 10L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long enthalpyQ = -4063L * IntegratedFluidNetwork.ENTHALPY_SCALE;
-        assertTrue(input.addState(nitrogen, amountQ, enthalpyQ));
-
-        for (int attempt = 0; attempt < 16; attempt++) {
-            IntegratedFluidNetwork.ExtractedPayload extracted = input.extractProportional(amountQ, false);
-            assertFalse(
-                IFNStateMutationApplier.addOutputOrRestoreInput(
-                    input,
-                    output,
-                    nitrogen,
-                    IntegratedFluidNetwork.ExtractedPayload.of(extracted.amountQ, extracted.enthalpyQ),
-                    extracted.enthalpyQ));
-            assertEquals(amountQ, input.getAmountQ());
-            assertEquals(enthalpyQ, input.getEnthalpyQ());
-            assertEquals(0L, output.getAmountQ());
+    void repeatedRefusalsCannotHeatColdWaterOrSpendItTwice() {
+        var input = chamber(100);
+        var output = chamber(100);
+        coldWater(input, 290);
+        output.freeze("isolated");
+        long coldEnergy = energy(input);
+        assertTrue(coldEnergy < 0);
+        for (int i = 0; i < 16; i++) {
+            assertEquals(0, input.meterTo(output, 10_000_000, Double.MAX_VALUE));
+            assertEquals(9_000_000L, input.getAmountQ());
+            assertEquals(coldEnergy, energy(input));
+            assertEquals(0, output.getAmountQ());
+            assertEquals(0, energy(output));
         }
-        assertEquals(70.0d, input.getDerivedTemperature(), 0.001d);
+        output.clearFrozen();
+        assertTrue(input.meterTo(output, 10_000_000, Double.MAX_VALUE) > 0);
+        assertEquals(9_000_000L, input.getAmountQ() + output.getAmountQ());
+        assertEquals(coldEnergy, energy(input) + energy(output));
     }
 
     @Test
-    void oneGtLiterInputIsOneReferenceLiter() {
-        long oneRefLiterQ = IntegratedFluidNetwork.AMOUNT_SCALE;
-
-        assertEquals(oneRefLiterQ, IntegratedFluidNetwork.toAmountQ(1));
-        assertEquals(1, IntegratedFluidNetwork.toAmountMb(oneRefLiterQ));
+    void exchangingHeatChangesEnergyWithoutMovingSubstance() {
+        var hot = chamber(1000);
+        var cold = chamber(1000);
+        IFNTestSupport.restoreDrySteamAt475K(hot, 1);
+        coldWater(cold, 290);
+        long hotMass = hot.getAmountQ(), coldMass = cold.getAmountQ(), hotEnergy = energy(hot), coldEnergy = energy(cold);
+        long heat = hot.conductHeatTo(cold, 100);
+        assertTrue(heat > 0);
+        assertEquals(hotEnergy - heat, energy(hot));
+        assertEquals(coldEnergy + heat, energy(cold));
+        assertEquals(hotMass, hot.getAmountQ());
+        assertEquals(coldMass, cold.getAmountQ());
     }
 
     @Test
-    void changingThermalEnergyDoesNotChangeExtractableSubstance() {
-        Fluid fluid = IFNTestSupport.vaporFluid();
-        IntegratedFluidNetwork network = IFNTestSupport.newNetwork(fluid, 100_000, 0, 50.0f);
-        long amountQ = 100L * IntegratedFluidNetwork.AMOUNT_SCALE;
-
-        assertTrue(network.addState(fluid, amountQ, enthalpyFor(fluid, 2.0d, 300.0d, amountQ)));
-        long originalAmountQ = network.getAmountQ();
-
-        network.clearFluid();
-        assertTrue(network.addState(fluid, amountQ, enthalpyFor(fluid, 2.0d, 600.0d, amountQ)));
-
-        assertEquals(originalAmountQ, network.getAmountQ());
+    void mergingColdWaterWithSteamPreservesSignedEnergyAndRemovesTheDonorInventory() {
+        var first = chamber(1000);
+        var second = chamber(2000);
+        coldWater(first, 285);
+        IFNTestSupport.restoreDrySteamAt475K(second, 1);
+        assertTrue(energy(first) < 0 && energy(second) > 0);
+        long mass = first.getAmountQ() + second.getAmountQ(), energy = energy(first) + energy(second);
+        new NetworkManager(null, new IntegratedFluidNetworkSavedData()).mergeIntoNetwork(first, java.util.Set.of(second));
+        assertEquals(mass, first.getAmountQ());
+        assertEquals(energy, energy(first));
+        assertEquals(0, second.getAmountQ());
+        assertEquals(0, energy(second));
+        assertEquals(3000, first.getOccupiedVolume(), 0.001);
     }
 
-    @Test
-    void networkMergeSumsSubstanceAndEnergy() {
-        Fluid fluid = IFNTestSupport.liquidFluid();
-        IntegratedFluidNetwork first = IFNTestSupport.newNetwork(fluid, 10_000, 0, 20.0f);
-        IntegratedFluidNetwork second = IFNTestSupport.newNetwork(fluid, 10_000, 0, 20.0f);
-        long firstAmountQ = 10L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long secondAmountQ = 5L * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long firstEnthalpyQ = enthalpyFor(fluid, 1.0d, 300.0d, firstAmountQ);
-        long secondEnthalpyQ = enthalpyFor(fluid, 1.0d, 360.0d, secondAmountQ);
-
-        assertTrue(first.addState(fluid, firstAmountQ, firstEnthalpyQ));
-        assertTrue(second.addState(fluid, secondAmountQ, secondEnthalpyQ));
-
-        first.merge(second);
-
-        assertEquals(firstAmountQ + secondAmountQ, first.getAmountQ());
-        assertEquals(firstEnthalpyQ + secondEnthalpyQ, first.getEnthalpyQ());
-        assertEquals(0L, second.getAmountQ());
+    private static void coldWater(IntegratedFluidNetwork chamber, double kelvin) {
+        chamber.replaceCanonicalState(IFNCanonicalState.fromRaw("water", 9_000_000, -2_700_000_000_000L));
+        chamber.exchangeThroughRadiator(kelvin, 1e9, kelvin);
+        assertEquals(kelvin, chamber.getTemperature(), 0.001);
     }
 
-    private static long enthalpyFor(Fluid fluid, double pressureBar, double temperatureK, long amountQ) {
-        double specificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(fluid, pressureBar, temperatureK);
-        return IntegratedFluidNetwork.toEnthalpyQFromSpecific(specificEnthalpy, amountQ);
+    private static IntegratedFluidNetwork chamber(int liters) {
+        return IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), liters, 0, 20);
+    }
+
+    private static long energy(IntegratedFluidNetwork chamber) {
+        return chamber.getCanonicalState().totalEnergy().rawUnits();
     }
 }

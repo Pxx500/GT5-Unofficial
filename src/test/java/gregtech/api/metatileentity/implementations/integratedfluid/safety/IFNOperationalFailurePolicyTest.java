@@ -46,7 +46,7 @@ class IFNOperationalFailurePolicyTest {
     private static IFNPressureLimitEvaluation pressure(double pressureBar, float maxPressureBar) {
         return IFNPressureLimitEvaluation.evaluate(
                 pressureBar,
-                IFNOperationalLimits.ofAccumulatorMaxPressureBar(maxPressureBar),
+                IFNOperationalLimits.ofMaxPressureBar(maxPressureBar),
                 false);
     }
 

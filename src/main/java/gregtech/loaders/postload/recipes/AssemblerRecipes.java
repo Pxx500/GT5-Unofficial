@@ -46,6 +46,8 @@ import gregtech.api.enums.ItemList;
 import gregtech.api.enums.Materials;
 import gregtech.api.enums.OrePrefixes;
 import gregtech.api.enums.TierEU;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPipe;
 import gregtech.api.objects.OreDictItemStack;
 import gregtech.api.objects.SubstituteFluidStack;
 import gregtech.api.util.GTModHandler;
@@ -60,6 +62,22 @@ public class AssemblerRecipes implements Runnable {
 
     @Override
     public void run() {
+
+        GTValues.RA.stdBuilder()
+            .itemInputs(GTOreDictUnificator.get(OrePrefixes.pipeMedium, Materials.TungstenSteel, 1),
+                GTOreDictUnificator.get(OrePrefixes.plateDense, Materials.TungstenSteel, 1))
+            .itemOutputs(new ItemStack(GregTechAPI.sBlockMachines, 1, MTEIntegratedFluidPipe.REINFORCED_ID))
+            .duration(10 * SECONDS)
+            .eut(TierEU.RECIPE_EV)
+            .addTo(assemblerRecipes);
+
+        GTValues.RA.stdBuilder()
+            .itemInputs(ItemList.Hull_EV.get(1), ItemList.Electric_Pump_EV.get(1),
+                new ItemStack(GregTechAPI.sBlockMachines, 1, MTEIntegratedFluidPipe.REINFORCED_ID))
+            .itemOutputs(new ItemStack(GregTechAPI.sBlockMachines, 1, MTEIntegratedFluidLiquidPump.HIGH_PRESSURE_ID))
+            .duration(10 * SECONDS)
+            .eut(TierEU.RECIPE_EV)
+            .addTo(assemblerRecipes);
 
         this.withBartWorks();
         this.withGalacticraftMars();

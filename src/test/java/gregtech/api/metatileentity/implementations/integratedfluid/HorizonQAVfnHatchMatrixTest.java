@@ -8,7 +8,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import gregtech.api.metatileentity.implementations.integratedfluid.HorizonQAVfnScenario.ScenarioMember;
-import gregtech.api.metatileentity.implementations.integratedfluid.HorizonQAVfnScenario.SeededFluid;
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 
 class HorizonQAVfnHatchMatrixTest {
 
@@ -41,7 +41,7 @@ class HorizonQAVfnHatchMatrixTest {
 
     @Test
     void hatchAndMachineSplitMergeDoesNotDuplicateFluid() {
-        HorizonQAVfnScenario scenario = HorizonQAVfnScenario.create();
+        HorizonQAVfnScenario scenario = HorizonQAVfnScenario.create(IFNTestSupport.waterFluid());
         ScenarioMember inputPipe = scenario.pipe("input-pipe");
         ScenarioMember inputHatch = scenario.inputHatch("input-hatch");
         ScenarioMember machine = scenario.machineHatch("machine-hatch");
@@ -52,7 +52,7 @@ class HorizonQAVfnHatchMatrixTest {
         scenario.connectChain(inputPipe, inputHatch, machine, outputHatch, outputPipe);
         scenario.addNetworkFrom(inputPipe);
         scenario.assertSingleNetwork(members, 5);
-        SeededFluid fluid = scenario.seedFluid(inputPipe, 18L, 300.0d);
+        IFNCanonicalState fluid = scenario.chargeWater(inputPipe, 18);
 
         scenario.disconnect(machine, outputHatch);
         scenario.changedAt(machine);
@@ -109,7 +109,7 @@ class HorizonQAVfnHatchMatrixTest {
         assertTrue(IFNNetworkTransferGate.canInjectFromGtPipe(network));
         assertTrue(IFNNetworkTransferGate.canExtractToGtPipe(network));
 
-        network.setPressure(IFNPressurePolicy.injectorCutoffPressureBar() + 0.01f);
+        IFNTestSupport.restoreDrySteamAt475K(network, 0.95);
 
         assertFalse(IFNNetworkTransferGate.canInjectFromGtPipe(network));
         assertTrue(IFNNetworkTransferGate.canExtractToGtPipe(network));

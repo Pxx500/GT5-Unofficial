@@ -13,7 +13,9 @@ public final class CoverIFNPressureDetector extends CoverIFNDetectorBase {
 
     @Override
     protected double readValue(IntegratedFluidNetwork network) {
-        return network.getPressure();
+        if (network.getAmountQ() == 0) return 0;
+        var state = network.getSolvedState();
+        return state.isPresent() ? state.get().pressurePa() / 100_000 : Double.NaN;
     }
 
     @Override

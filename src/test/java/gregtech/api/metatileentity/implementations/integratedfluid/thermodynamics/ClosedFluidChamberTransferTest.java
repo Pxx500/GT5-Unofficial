@@ -11,6 +11,108 @@ import org.junit.jupiter.api.Test;
 class ClosedFluidChamberTransferTest {
 
     @Test
+    void vaporOutletMovesWholeGtSteamPortionsOrNothing() {
+        var drum = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
+        var empty = ClosedFluidChamber.empty(PureFluid.water(), 2000);
+        var tooSmall = drum.meteredVaporTo(empty, BigDecimal.TEN);
+        assertTrue(tooSmall.source() == drum && tooSmall.receiver() == empty);
+        var enough = drum.meteredVaporTo(empty, BigDecimal.valueOf(20));
+        assertEquals(0, new BigDecimal("0.006250").compareTo(enough.transferredMassKg()));
+    }
+
+    @Test
+    void denseFeedCannotSpendPowerToPumpAFractionOfOneKg() {
+        var low = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("21.301564"), 100, new BigDecimal("37551663.742696"));
+        var high = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("12.894426"), 100, new BigDecimal("35530474.686141"));
+        var stroke = low.pumpLiquidTo(high, BigDecimal.ONE, 35e6, 12e6, 40960);
+        assertTrue(stroke.source() == low && stroke.receiver() == high);
+        assertEquals(0, stroke.shaftWorkEu());
+    }
+
+    @Test
+    void pressureAtEitherSplitInletStopsBothBranchesWithoutLosingTheRemainder() {
+        var drum = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
+        var large = ClosedFluidChamber.empty(PureFluid.water(), 1000);
+        var small = ClosedFluidChamber.empty(PureFluid.water(), 12);
+        var move = drum.splitChargeTo(large, small, 800, 0.25);
+        var drawn = drum.massKg().subtract(move.source().massKg());
+        assertTrue(drawn.signum() > 0 && drawn.compareTo(new BigDecimal("0.1")) < 0);
+        assertEquals(0, drawn.compareTo(move.first().massKg().add(move.second().massKg())));
+        assertEquals(0, drawn.multiply(new BigDecimal("0.25")).setScale(6, java.math.RoundingMode.DOWN).compareTo(move.first().massKg()));
+        assertEquals(0, drum.totalEnergyEu().compareTo(move.source().totalEnergyEu()
+            .add(move.first().totalEnergyEu()).add(move.second().totalEnergyEu())));
+        assertTrue(move.source().pressurePa() >= Math.max(move.first().pressurePa(), move.second().pressurePa()));
+        var blocked = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1000, new BigDecimal("2203793.5"));
+        var refused = drum.splitChargeTo(large, blocked, 800, 0.25);
+        assertTrue(refused.source() == drum && refused.first() == large && refused.second() == blocked);
+    }
+
+    @Test
+    void vaporOutletMetersSaturatedVaporRatherThanBulkMixture() {
+        var drum = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
+        var empty = ClosedFluidChamber.empty(PureFluid.water(), 2000);
+        assertEquals(0.5, drum.state().vaporMassFraction(), 1e-8);
+        var move = drum.meteredVaporTo(empty, BigDecimal.valueOf(20));
+        // At 373.15 K and 1 bar, 20 L of saturated vapor contains 11613 microkg, not 20 L of bulk mixture
+        long expected = (long) (20 * 100000 / (1000 * 461.5 * 373.15) * 1_000_000);
+        assertEquals(expected, move.transferredMassKg().movePointRight(6).longValueExact());
+        double enthalpy = move.transportedEnergyEu().doubleValue() / move.transferredMassKg().doubleValue();
+        assertTrue(enthalpy > 2.24e6 && enthalpy < 2.27e6, "Vapor, not bulk enthalpy");
+        assertEquals(1, move.receiver().state().vaporMassFraction());
+        assertTrue(move.source().state().temperatureKelvin() < drum.state().temperatureKelvin());
+        assertEquals(0, drum.totalEnergyEu().compareTo(move.source().totalEnergyEu().add(move.receiver().totalEnergyEu())));
+        assertTrue(entropy(move.source()).add(entropy(move.receiver())).compareTo(entropy(drum)) >= 0);
+        var allAvailable = drum.meteredVaporTo(ClosedFluidChamber.empty(PureFluid.water(), 100_000), BigDecimal.valueOf(50_000));
+        assertTrue(allAvailable.transferredMassKg().signum() > 0 && allAvailable.transferredMassKg().doubleValue() <= 0.5);
+        assertEquals(0, allAvailable.source().massKg().add(allAvailable.receiver().massKg()).compareTo(BigDecimal.ONE));
+    }
+
+    @Test
+    void vaporOutletCannotDrainCompressedLiquidOrPushAgainstBackpressure() {
+        var water = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1.043, new BigDecimal("-100000"));
+        var vacuum = ClosedFluidChamber.empty(PureFluid.water(), 100);
+        assertTrue(water.pressurePa() > 0);
+        assertEquals(0, water.state().vaporMassFraction());
+        assertEquals(0, water.meteredVaporTo(vacuum, BigDecimal.TEN).transferredMassKg().signum());
+        var mixture = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
+        var highPressure = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1000, new BigDecimal("2203793.5"));
+        assertTrue(highPressure.pressurePa() > mixture.pressurePa());
+        assertEquals(0, mixture.meteredVaporTo(highPressure, BigDecimal.TEN).transferredMassKg().signum());
+    }
+
+    @Test
+    void dryStageHeadMatchesTheIsentropicGasDropAndStopsAtItsPressureRatio() {
+        var steam = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1000, new BigDecimal("2203793.5"));
+        var inlet = steam.state();
+        double expected = 2010 * 450 * (1 - Math.pow(0.5, 461.5 / 2010));
+        double h = inlet.specificEnthalpyEuPerKg();
+        assertEquals(expected, h - PureFluid.water().idealExpansionOutlet(inlet, steam.pressurePa() / 2, 8).specificEnthalpyEuPerKg(), 0.000001);
+        assertEquals(expected, h - PureFluid.water().idealExpansionOutlet(inlet, steam.pressurePa() / 4, 2).specificEnthalpyEuPerKg(), 0.000001);
+    }
+
+    @Test
+    void expanderNeedsDrySteamPressureDifferenceAndRoomForWork() {
+        var stage = new ClosedFluidChamber.ExpansionStage(8, 0.7);
+        var steam = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1000, new BigDecimal("2203793.5"));
+        var equal = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1000, steam.totalEnergyEu());
+        var empty = ClosedFluidChamber.empty(PureFluid.water(), 1000);
+        var wet = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
+        var port = BigDecimal.TEN;
+        for (var stopped : new ClosedFluidChamber.FluidTransfer[] {
+            steam.expandTo(equal, port, stage, 1000), empty.expandTo(steam, port, stage, 1000),
+            wet.expandTo(empty, port, stage, 1000), steam.expandTo(empty, port, stage, 0) }) {
+            assertEquals(0, stopped.shaftWorkEu());
+            assertEquals(0, stopped.transferredMassKg().signum());
+        }
+        var move = steam.expandTo(empty, port, stage, 96);
+        assertTrue(move.shaftWorkEu() > 0 && move.shaftWorkEu() <= 96);
+        assertEquals(0, BigDecimal.ONE.compareTo(move.source().massKg().add(move.receiver().massKg())));
+        assertEquals(0, steam.totalEnergyEu().compareTo(move.source().totalEnergyEu()
+            .add(move.receiver().totalEnergyEu()).add(BigDecimal.valueOf(move.shaftWorkEu()))));
+        assertTrue(entropy(move.source()).add(entropy(move.receiver())).compareTo(entropy(steam)) >= 0);
+    }
+
+    @Test
     void homogeneousMixtureOutflowIsConsistentAcrossPacketSizes() {
         ClosedFluidChamber source = ClosedFluidChamber
             .of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
@@ -255,7 +357,7 @@ class ClosedFluidChamberTransferTest {
                 .internalEnergyEu());
 
         ClosedFluidChamber hot = ClosedFluidChamber
-            .of(PureFluid.water(), BigDecimal.ONE, 50000.0, new BigDecimal("2203793.5"));
+            .of(PureFluid.water(), BigDecimal.ONE, 50000.0, new BigDecimal("2978043.5"));
         ClosedFluidChamber empty = ClosedFluidChamber.empty(PureFluid.water(), 50000.0);
         ClosedFluidChamber.FluidTransfer unsupported = hot.transferTo(empty, new BigDecimal("0.1"));
         assertEquals(BigDecimal.ZERO, unsupported.transferredMassKg());

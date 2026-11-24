@@ -1,12 +1,11 @@
 package gregtech.api.metatileentity.implementations.integratedfluid.amount;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
-
-import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
 
 public final class SubstanceAmount implements Comparable<SubstanceAmount> {
 
-    public static final long SCALE = IntegratedFluidNetwork.AMOUNT_SCALE;
+    public static final long SCALE = 1_000_000L;
     public static final SubstanceAmount ZERO = new SubstanceAmount(0L);
 
     private final long rawUnits;
@@ -22,18 +21,26 @@ public final class SubstanceAmount implements Comparable<SubstanceAmount> {
         return rawUnits == 0L ? ZERO : new SubstanceAmount(rawUnits);
     }
 
-    public static SubstanceAmount fromRefLiters(long refLiters) {
-        if (refLiters < 0L) {
-            throw new IllegalArgumentException("refL cannot be negative");
+    public static SubstanceAmount fromKilograms(long kilograms) {
+        if (kilograms < 0L) {
+            throw new IllegalArgumentException("mass cannot be negative");
         }
-        return fromRawUnits(Math.multiplyExact(refLiters, SCALE));
+        return fromRawUnits(Math.multiplyExact(kilograms, SCALE));
+    }
+
+    public BigDecimal kilograms() {
+        return BigDecimal.valueOf(rawUnits, 6);
+    }
+
+    public String formatKilograms() {
+        return kilograms().stripTrailingZeros().toPlainString();
     }
 
     public long rawUnits() {
         return rawUnits;
     }
 
-    public long toWholeRefLiters() {
+    public long toWholeKilograms() {
         return rawUnits / SCALE;
     }
 

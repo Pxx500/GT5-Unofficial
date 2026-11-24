@@ -13,8 +13,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.ChatComponentTranslation;
 import net.minecraftforge.common.util.ForgeDirection;
-import net.minecraftforge.fluids.Fluid;
-import net.minecraftforge.fluids.FluidStack;
 
 import org.jetbrains.annotations.NotNull;
 
@@ -28,10 +26,11 @@ import gregtech.api.interfaces.ITexture;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.implementations.MTEEnhancedMultiBlockBase;
-import gregtech.api.metatileentity.implementations.integratedfluid.FluidThermalProperties;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNMachineResultMapper;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNStateMutationApplier;
-import gregtech.api.metatileentity.implementations.integratedfluid.IFNStateTransferPlanner;
+import gregtech.api.metatileentity.implementations.integratedfluid.IFNAmbientTemperature;
+import gregtech.api.metatileentity.implementations.integratedfluid.IFNNetworkTransferGate;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.ClosedFluidChamber;
+import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.PureFluid;
 import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInputHatch;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidOutputHatch;
@@ -47,13 +46,12 @@ import gregtech.common.gui.modularui.multiblock.MTERadiatorGui;
 import gregtech.common.gui.modularui.multiblock.base.MTEMultiBlockBaseGui;
 import gregtech.common.tileentities.machines.multi.radiator.RadiatorLoopAnalyzer;
 import gregtech.common.tileentities.machines.multi.radiator.RadiatorLoopSnapshot;
-import gregtech.common.tileentities.machines.multi.radiator.RadiatorPowerPolicy;
 import gregtech.common.tileentities.machines.multi.radiator.RadiatorThermo;
 
 public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implements ISurvivalConstructable {
 
     private static final String STRUCTURE_PIECE_MAIN = "main";
-    private static final int HEAT_CAPACITY_PER_OPERATION = 1000;
+    private static final int LOOP_VOLUME_L = 1000;
     private static final int MODE_CONSTANT_TIME = 0;
     private static final int MODE_TARGET_TEMPERATURE = 1;
     private static final int DEFAULT_CONSTANT_OPERATION_TICKS = 20;
@@ -103,13 +101,18 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
                     ofBlock(GregTechAPI.sBlockCasings11, RadiatorLoopAnalyzer.PORT_META))))
         .build();
 
+    private ClosedFluidChamber loop = ClosedFluidChamber.empty(PureFluid.water(), LOOP_VOLUME_L);
+    private int remainingTicks;
+    private boolean outputReady;
+    private float batchTargetKelvin;
+    private boolean heatingToTarget;
+
     private int mCasingAmount;
     private int radiatorPortCount;
     private int constantOperationTicks = DEFAULT_CONSTANT_OPERATION_TICKS;
     private float targetTemperature = DEFAULT_TARGET_TEMPERATURE;
     private RadiatorLoopSnapshot lastLoopSnapshot = RadiatorLoopSnapshot.invalid("radiator_loop_missing");
-    private float lastPredictedOutputTemperature = RadiatorThermo.AMBIENT_TEMPERATURE;
-    private float lastLoopOutletPressure = IntegratedFluidNetwork.DEFAULT_PRESSURE;
+    private float lastLoopTemperature = RadiatorThermo.AMBIENT_TEMPERATURE;
 
     public MTERadiator(int aID, String aName, String aNameRegional) {
         super(aID, aName, aNameRegional);
@@ -183,6 +186,8 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
             && !mMaintenanceHatches.isEmpty();
 
         if (valid) {
+            // External pressure can release a blocked batch without changing a GT hatch slot
+            doPeriodicChecks = true;
             refreshLoopSnapshot();
         } else {
             lastLoopSnapshot = RadiatorLoopSnapshot.invalid("radiator_loop_missing");
@@ -200,158 +205,102 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
         MTEIntegratedFluidOutputHatch outputHatch = mIntegratedOutputHatches.get(0);
         IntegratedFluidNetwork inputNetwork = inputHatch.getNetwork();
         IntegratedFluidNetwork outputNetwork = outputHatch.getNetwork();
-        CheckRecipeResult networkStatus = IFNMachineResultMapper.requireOperationalNetworks(
-            new IntegratedFluidNetwork[] { inputNetwork },
-            new IntegratedFluidNetwork[] { outputNetwork });
-        if (networkStatus != CheckRecipeResultRegistry.SUCCESSFUL) {
-            return networkStatus;
-        }
-
-        FluidStack inputFluid = inputNetwork.getStoredFluid();
-        if (inputFluid == null || inputFluid.amount <= 0) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
         refreshLoopSnapshot();
-        if (!lastLoopSnapshot.valid) {
-            return SimpleCheckRecipeResult.ofFailure("awaiting_configuration");
+        if (!lastLoopSnapshot.valid) return SimpleCheckRecipeResult.ofFailure("awaiting_configuration");
+        if (outputReady) {
+            if (!IFNNetworkTransferGate.canReceiveFromMachine(outputNetwork)) return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+            double pressureDropPa = lastLoopSnapshot.pressureDropBar * 100_000.0;
+            if (loop.pressurePa() <= outputNetwork.getPressurePa() + pressureDropPa) {
+                return SimpleCheckRecipeResult.ofFailure("vfn_radiator_head");
+            }
+            var after = outputNetwork.drainMachineChamber(loop, LOOP_VOLUME_L, pressureDropPa);
+            if (after == loop) return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+            loop = after;
+            outputReady = false;
+            getBaseMetaTileEntity().markDirty();
         }
-
-        float inputTemperature = inputNetwork.getTemperature();
-        if (inputTemperature <= 0.0f) {
-            inputTemperature = RadiatorThermo.AMBIENT_TEMPERATURE;
+        // An interrupted batch inside the loop can finish without either external port
+        if (remainingTicks == 0 || loop.isEmpty()) {
+            if (!IFNNetworkTransferGate.canProvideToMachine(inputNetwork)) return CheckRecipeResultRegistry.NO_RECIPE;
+            if (!IFNNetworkTransferGate.canReceiveFromMachine(outputNetwork)) return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
         }
-
-        int fluidToProcess = Math.min(inputFluid.amount, HEAT_CAPACITY_PER_OPERATION);
-        if (fluidToProcess <= 0) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
-        int originalFluidToProcess = fluidToProcess;
-        Fluid fluid = inputFluid.getFluid();
-        if (fluid == null) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
-        FluidStack fluidForCalculation = inputFluid.copy();
-        fluidForCalculation.amount = fluidToProcess;
-
-        float loopOutletPressure = RadiatorThermo.computeLoopOutletPressure(inputNetwork.getPressure(), lastLoopSnapshot);
-        double outputTemperature = inputTemperature;
-        int processTicks;
-
-        if (machineMode == MODE_TARGET_TEMPERATURE) {
-            if (!RadiatorThermo.movesTowardAmbient(inputTemperature, RadiatorThermo.AMBIENT_TEMPERATURE, targetTemperature)) {
+        if (remainingTicks == 0) {
+            double ambient = ambientKelvin();
+            if (machineMode == MODE_TARGET_TEMPERATURE && !reachable(inputNetwork.getTemperature(), ambient, targetTemperature)) {
                 return SimpleCheckRecipeResult.ofFailure("awaiting_configuration");
             }
-
-            processTicks = RadiatorThermo.computeRequiredProcessTicks(
-                lastLoopSnapshot,
-                fluidForCalculation,
-                inputTemperature,
-                RadiatorThermo.AMBIENT_TEMPERATURE,
-                targetTemperature
-            );
-            if (processTicks <= 0) {
-                return CheckRecipeResultRegistry.NO_RECIPE;
-            }
-            outputTemperature = targetTemperature;
-        } else {
-            processTicks = constantOperationTicks;
-            outputTemperature = RadiatorThermo.computeOutputTemperatureForFixedTime(
-                lastLoopSnapshot,
-                fluidForCalculation,
-                inputTemperature,
-                RadiatorThermo.AMBIENT_TEMPERATURE,
-                processTicks
-            );
-        }
-
-        double outputSpecificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(
-            fluid,
-            loopOutletPressure,
-            outputTemperature
-        );
-
-        if (outputNetwork != inputNetwork) {
-            long requestedAmountQ = fluidToProcess * IntegratedFluidNetwork.AMOUNT_SCALE;
-            var plan = IFNStateTransferPlanner.planSingleOutputStateAdd(
-                inputNetwork,
-                outputNetwork,
-                fluid,
-                outputSpecificEnthalpy,
-                requestedAmountQ,
-                1.0f,
-                lastLoopSnapshot.pressureDropBar
-            );
-            if (plan.acceptedAmountQ < IntegratedFluidNetwork.AMOUNT_SCALE) {
-                return IFNMachineResultMapper.toRecipeResult(plan.status);
-            }
-            fluidToProcess = toAmountMb(plan.acceptedAmountQ);
-        }
-
-        if (fluidToProcess <= 0) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
-        if (fluidToProcess != originalFluidToProcess) {
-            fluidForCalculation.amount = fluidToProcess;
-            if (machineMode == MODE_TARGET_TEMPERATURE) {
-                processTicks = RadiatorThermo.computeRequiredProcessTicks(
-                    lastLoopSnapshot,
-                    fluidForCalculation,
-                    inputTemperature,
-                    RadiatorThermo.AMBIENT_TEMPERATURE,
-                    targetTemperature
-                );
-                outputTemperature = targetTemperature;
+            double inputTemperatureBeforeFill = inputNetwork.getTemperature();
+            if (loop.isEmpty() && inputNetwork == outputNetwork) {
+                if (inputNetwork.getAmountQ() == 0 || inputTemperatureBeforeFill == ambient) return CheckRecipeResultRegistry.NO_RECIPE;
             } else {
-                outputTemperature = RadiatorThermo.computeOutputTemperatureForFixedTime(
-                    lastLoopSnapshot,
-                    fluidForCalculation,
-                    inputTemperature,
-                    RadiatorThermo.AMBIENT_TEMPERATURE,
-                    processTicks
-                );
+                var filled = inputNetwork.fillMachineChamber(loop, LOOP_VOLUME_L);
+                if (filled == loop) return CheckRecipeResultRegistry.NO_RECIPE;
+                loop = filled;
             }
-
-            outputSpecificEnthalpy = FluidThermalProperties.getSpecificEnthalpyFromPT(
-                fluid,
-                loopOutletPressure,
-                outputTemperature
-            );
+            remainingTicks = machineMode == MODE_TARGET_TEMPERATURE ? -1 : constantOperationTicks;
+            batchTargetKelvin = targetTemperature;
+            heatingToTarget = targetTemperature > inputTemperatureBeforeFill;
+            getBaseMetaTileEntity().markDirty();
         }
-
-        double rollbackSpecificEnthalpy = inputNetwork.getSpecificEnthalpy();
-        FluidStack drainedFluid = inputNetwork.drainFluid(fluidToProcess, false);
-        if (drainedFluid == null || drainedFluid.amount <= 0) {
-            return CheckRecipeResultRegistry.NO_RECIPE;
-        }
-
-        long drainedAmountQ = drainedFluid.amount * IntegratedFluidNetwork.AMOUNT_SCALE;
-        long outputEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(outputSpecificEnthalpy, drainedAmountQ);
-        long rollbackEnthalpyQ = IntegratedFluidNetwork.toEnthalpyQFromSpecific(rollbackSpecificEnthalpy, drainedAmountQ);
-        if (!IFNStateMutationApplier.addOutputOrRestoreInput(
-            inputNetwork,
-            outputNetwork,
-            fluid,
-            IntegratedFluidNetwork.ExtractedPayload.of(drainedAmountQ, rollbackEnthalpyQ),
-            outputEnthalpyQ)) {
-            return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
-        }
-
-        lastPredictedOutputTemperature = (float) outputTemperature;
-        lastLoopOutletPressure = loopOutletPressure;
-        this.mMaxProgresstime = Math.max(1, processTicks);
-        this.mEfficiency = 10000;
-        this.mEUt = RadiatorPowerPolicy.computeEUt(0L, this.mMaxProgresstime);
-
+        // GT owns the tick clock. A target batch uses short progress windows until the thermostat opens
+        mMaxProgresstime = remainingTicks < 0 ? 20 : remainingTicks;
+        mEfficiency = 10000;
+        mEUt = 0;
         return CheckRecipeResultRegistry.SUCCESSFUL;
+    }
+
+    private double ambientKelvin() {
+        return IFNAmbientTemperature.getAmbientTemperature(getBaseMetaTileEntity().getWorld());
+    }
+
+    private static boolean reachable(double from, double ambient, double target) {
+        return target >= Math.min(from, ambient) && target <= Math.max(from, ambient);
+    }
+
+    @Override
+    public boolean onRunningTick(ItemStack stack) {
+        var shared = loop.isEmpty() ? sharedNetwork() : null;
+        if (remainingTicks == 0 || !lastLoopSnapshot.valid || loop.isEmpty() && shared == null) {
+            if (loop.isEmpty()) remainingTicks = 0;
+            mMaxProgresstime = mProgresstime + 1;
+            return true;
+        }
+        double ambient = ambientKelvin();
+        double before = shared == null ? loop.state().temperatureKelvin() : shared.getTemperature();
+        double conductance = RadiatorThermo.computeEffectiveConductance(lastLoopSnapshot, 0.5 * (before + ambient));
+        var stop = remainingTicks < 0 ? batchTargetKelvin : ambient;
+        double after;
+        if (shared == null) {
+            loop = loop.exchangeWithAmbient(ambient, conductance, stop);
+            after = loop.state().temperatureKelvin();
+        } else {
+            shared.exchangeThroughRadiator(ambient, conductance, stop);
+            after = shared.getTemperature();
+        }
+        lastLoopTemperature = (float) after;
+        if (remainingTicks > 0) remainingTicks--;
+        else if (heatingToTarget ? after >= stop - 0.001 : after <= stop + 0.001) remainingTicks = 0;
+        if (remainingTicks == 0) {
+            outputReady = !loop.isEmpty();
+            mMaxProgresstime = mProgresstime + 1;
+        }
+        return true;
+    }
+
+    private IntegratedFluidNetwork sharedNetwork() {
+        if (mIntegratedInputHatches.isEmpty() || mIntegratedOutputHatches.isEmpty()) return null;
+        var inlet = mIntegratedInputHatches.get(0).getNetwork();
+        return inlet == mIntegratedOutputHatches.get(0).getNetwork() ? inlet : null;
     }
 
     @Override
     public void saveNBTData(NBTTagCompound aNBT) {
         super.saveNBTData(aNBT);
+        IFNCanonicalState.writeWorkingChamber(aNBT, "loop", loop);
+        aNBT.setInteger("loopTicks", remainingTicks);
+        aNBT.setBoolean("loopOutputReady", outputReady);
+        aNBT.setFloat("loopTargetK", batchTargetKelvin);
+        aNBT.setBoolean("loopHeating", heatingToTarget);
         aNBT.setInteger("radiatorMode", machineMode);
         aNBT.setInteger("radiatorConstantTicks", constantOperationTicks);
         aNBT.setFloat("radiatorTargetTemperature", targetTemperature);
@@ -360,6 +309,12 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
     @Override
     public void loadNBTData(NBTTagCompound aNBT) {
         super.loadNBTData(aNBT);
+        loop = IFNCanonicalState.readWorkingChamber(aNBT, "loop", LOOP_VOLUME_L);
+        remainingTicks = aNBT.getInteger("loopTicks");
+        outputReady = aNBT.getBoolean("loopOutputReady");
+        batchTargetKelvin = aNBT.getFloat("loopTargetK");
+        heatingToTarget = aNBT.getBoolean("loopHeating");
+        if (!loop.isEmpty()) lastLoopTemperature = (float) loop.state().temperatureKelvin();
         if (aNBT.hasKey("radiatorMode")) {
             machineMode = aNBT.getInteger("radiatorMode");
         }
@@ -437,42 +392,34 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
     }
 
     public float getOutputTemperature() {
-        return lastPredictedOutputTemperature;
+        return lastLoopTemperature;
     }
 
-    public int getInputNetworkCapacity() {
-        if (mIntegratedInputHatches.isEmpty()) return 0;
-        var network = mIntegratedInputHatches.get(0).getNetwork();
-        return network != null ? network.getMaxCapacity() : 0;
+    public long getInputBaseLiters() {
+        var network = mIntegratedInputHatches.isEmpty() ? null : mIntegratedInputHatches.get(0).getNetwork();
+        return network == null ? 0 : network.getTopologySnapshot().baseVolume().toWholeLiters();
     }
 
-    public int getInputNetworkStored() {
-        if (mIntegratedInputHatches.isEmpty()) return 0;
-        var network = mIntegratedInputHatches.get(0).getNetwork();
-        if (network == null) return 0;
-        var fluid = network.getStoredFluid();
-        return fluid != null ? fluid.amount : 0;
+    public long getInputMicroKg() {
+        var network = mIntegratedInputHatches.isEmpty() ? null : mIntegratedInputHatches.get(0).getNetwork();
+        return network == null ? 0 : network.getAmountQ();
     }
 
-    public int getOutputNetworkCapacity() {
-        if (mIntegratedOutputHatches.isEmpty()) return 0;
-        var network = mIntegratedOutputHatches.get(0).getNetwork();
-        return network != null ? network.getMaxCapacity() : 0;
+    public long getOutputBaseLiters() {
+        var network = mIntegratedOutputHatches.isEmpty() ? null : mIntegratedOutputHatches.get(0).getNetwork();
+        return network == null ? 0 : network.getTopologySnapshot().baseVolume().toWholeLiters();
     }
 
-    public int getOutputNetworkStored() {
-        if (mIntegratedOutputHatches.isEmpty()) return 0;
-        var network = mIntegratedOutputHatches.get(0).getNetwork();
-        if (network == null) return 0;
-        var fluid = network.getStoredFluid();
-        return fluid != null ? fluid.amount : 0;
+    public long getOutputMicroKg() {
+        var network = mIntegratedOutputHatches.isEmpty() ? null : mIntegratedOutputHatches.get(0).getNetwork();
+        return network == null ? 0 : network.getAmountQ();
     }
 
     public String getFluidName() {
         if (mIntegratedInputHatches.isEmpty()) return "";
         var network = mIntegratedInputHatches.get(0).getNetwork();
         if (network == null) return "";
-        var fluid = network.getStoredFluid();
+        var fluid = network.getFluid();
         return fluid != null ? fluid.getLocalizedName() : "";
     }
 
@@ -497,7 +444,8 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
     }
 
     public float getLoopOutletPressure() {
-        return lastLoopOutletPressure;
+        var outlet = mIntegratedOutputHatches.isEmpty() ? null : mIntegratedOutputHatches.get(0).getNetwork();
+        return outlet == null ? 0 : outlet.getPressure();
     }
 
     public int getConstantOperationTicks() {
@@ -513,7 +461,7 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
     }
 
     public void setTargetTemperatureSetting(float temperature) {
-        targetTemperature = clampTargetTemperature(temperature);
+        if (Float.isFinite(temperature)) targetTemperature = clampTargetTemperature(temperature);
     }
 
     public String getMachineModeName() {
@@ -556,10 +504,6 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
 
     private static float clampTargetTemperature(float temperature) {
         return Math.max(MIN_TARGET_TEMPERATURE, Math.min(MAX_TARGET_TEMPERATURE, temperature));
-    }
-
-    private static int toAmountMb(long amountQ) {
-        return (int) Math.min(Integer.MAX_VALUE, amountQ / IntegratedFluidNetwork.AMOUNT_SCALE);
     }
 
     private void refreshLoopSnapshot() {

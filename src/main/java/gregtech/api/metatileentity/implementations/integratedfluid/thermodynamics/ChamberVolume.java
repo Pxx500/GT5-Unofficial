@@ -29,11 +29,11 @@ public record ChamberVolume(double baseLiters, double complianceLitersPerPa, dou
             .min(maximumDisplacementLiters, complianceLitersPerPa * Math.max(0.0, pressurePa - activationPressurePa));
     }
 
-    double litersAtPressure(double pressurePa) {
+    public double litersAtPressure(double pressurePa) {
         return baseLiters + displacementAtPressure(pressurePa);
     }
 
-    double elasticEnergyEu(double pressurePa) {
+    public double elasticEnergyEu(double pressurePa) {
         return energyAtDisplacement(displacementAtPressure(pressurePa));
     }
 

@@ -34,7 +34,7 @@ public final class IFNStateDistributor {
             total == null ? SubstanceAmount.ZERO : total.substanceAmount(),
             weights);
         EnergyAmount[] energyShares = splitEnergyByWeights(
-            total == null ? EnergyAmount.ZERO : total.internalEnergy(),
+            total == null ? EnergyAmount.ZERO : total.totalEnergy(),
             weights);
         IFNCanonicalState[] shares = new IFNCanonicalState[substanceShares.length];
         String fluidId = total == null ? null

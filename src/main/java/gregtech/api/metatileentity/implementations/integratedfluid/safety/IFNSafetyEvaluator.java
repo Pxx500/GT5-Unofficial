@@ -9,7 +9,7 @@ public final class IFNSafetyEvaluator {
     public static IFNOperationalSafetyEvaluation evaluate(IntegratedFluidNetwork network) {
         if (network == null) {
             return new IFNOperationalSafetyEvaluation(
-                IFNPressureLimitEvaluation.evaluate(0.0d, IFNOperationalLimits.ofAccumulatorMaxPressureBar(Float.MAX_VALUE),
+                IFNPressureLimitEvaluation.evaluate(0.0d, IFNOperationalLimits.ofMaxPressureBar(Float.MAX_VALUE),
                     true),
                 IFNTemperatureLimitEvaluation.evaluate(0.0d, Float.POSITIVE_INFINITY, true),
                 false,

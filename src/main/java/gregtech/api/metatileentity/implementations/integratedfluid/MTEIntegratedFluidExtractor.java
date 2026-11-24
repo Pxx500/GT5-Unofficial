@@ -5,6 +5,9 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
+import net.minecraftforge.fluids.FluidTankInfo;
+
+import gregtech.api.enums.GTValues;
 
 import gregtech.api.enums.Textures;
 import gregtech.api.interfaces.ITexture;
@@ -31,7 +34,7 @@ public class MTEIntegratedFluidExtractor extends MTEHatch implements IIntegrated
             "Converts network fluid to standard fluid",
             "Removes temperature and pressure properties",
             "Passively responds to drain requests",
-            "No extraction rate limit"
+            "Retains at least 1.10 bar in the network"
         });
     }
 
@@ -129,8 +132,7 @@ public class MTEIntegratedFluidExtractor extends MTEHatch implements IIntegrated
 
     @Override
     public FluidStack getFluid() {
-        // Extractor doesn't store fluid locally - it pulls from network on demand
-        return null;
+        return drain(1, false);
     }
 
     @Override
@@ -147,30 +149,19 @@ public class MTEIntegratedFluidExtractor extends MTEHatch implements IIntegrated
 
     @Override
     public FluidStack drain(int maxDrain, boolean doDrain) {
-        if (!canExtractFromNetwork(network)) {
-            return null;
-        }
+        return network == null ? null : network.export(null, maxDrain, doDrain, IFNAmbientTemperature.atPort(getBaseMetaTileEntity()));
+    }
 
-        // Get stored fluid info BEFORE draining
-        FluidStack networkFluid = network.getStoredFluid();
-        if (networkFluid == null || networkFluid.amount <= 0) {
-            return null;
-        }
+    @Override
+    public FluidStack drain(ForgeDirection side, FluidStack request, int amount, boolean doDrain) {
+        return request == null || network == null ? null : network.export(request, amount, doDrain, IFNAmbientTemperature.atPort(getBaseMetaTileEntity()));
+    }
 
-        // Calculate how much we can actually drain
-        int actualAmount = Math.min(maxDrain, networkFluid.amount);
-
-        if (actualAmount <= 0) {
-            return null;
-        }
-
-        // IMPORTANT: IFluidHandler.drain() parameter meanings:
-        // - doDrain = true  -> actually drain (simulate = false)
-        // - doDrain = false -> simulate only (simulate = true)
-        boolean simulate = !doDrain;  // Invert the parameter!
-
-        // Drain from network
-        return network.drainFluid(actualAmount, simulate);
+    @Override
+    public FluidTankInfo[] getTankInfo(ForgeDirection side) {
+        FluidStack available = drain(Integer.MAX_VALUE, false);
+        return available == null ? GTValues.emptyFluidTankInfo
+            : new FluidTankInfo[] { new FluidTankInfo(available, available.amount) };
     }
 
     static boolean canExtractFromNetwork(IntegratedFluidNetwork network) {
@@ -246,6 +237,12 @@ public class MTEIntegratedFluidExtractor extends MTEHatch implements IIntegrated
     // ===== Network Management =====
 
     @Override
+    public void onBlockDestroyed() {
+        NetworkManager.onBlockDestroyed(this, getBaseMetaTileEntity());
+        super.onBlockDestroyed();
+    }
+
+    @Override
     public void onRemoval() {
         IGregTechTileEntity baseTile = getBaseMetaTileEntity();
         if (baseTile != null && baseTile.isServerSide()) {
@@ -261,44 +258,26 @@ public class MTEIntegratedFluidExtractor extends MTEHatch implements IIntegrated
             return true;
         }
 
-        // Display own network info (extractor is a member)
-        if (network != null) {
-            FluidStack fluid = network.getStoredFluid();
-            if (fluid != null) {
-                int accumulatorCapacity = network.getAccumulatorCapacity();
-                int totalCapacity = network.getTotalCapacity();
-                aPlayer.addChatMessage(
-                    new net.minecraft.util.ChatComponentText(
-                        String.format(
-                            "Network: %s - %d/%d mB (%.1fK, %.1f bar)",
-                            fluid.getLocalizedName(),
-                            fluid.amount,
-                            totalCapacity,
-                            network.getTemperature(),
-                            network.getPressure()
-                        )
-                    )
-                );
-                if (accumulatorCapacity > 0) {
-                    aPlayer.addChatMessage(
-                        new net.minecraft.util.ChatComponentText(
-                            String.format("(+%d Hydrophore capacity)", accumulatorCapacity)
-                        )
-                    );
-                }
-            } else {
-                aPlayer.addChatMessage(
-                    new net.minecraft.util.ChatComponentText(
-                        String.format("Network: Empty (%d mB capacity)", network.getTotalCapacity())
-                    )
-                );
-            }
+        String message;
+        if (network == null) {
+            message = "Not connected to network";
         } else {
-            aPlayer.addChatMessage(
-                new net.minecraft.util.ChatComponentText("Not connected to network")
-            );
+            var inventory = network.getCanonicalState();
+            String contents = inventory.isEmpty() ? "Empty"
+                : inventory.substanceAmount().formatKilograms() + " kg " + inventory.fluidId().get();
+            var geometry = network.getTopologySnapshot();
+            message = "Network: " + contents + " | Capacity: " + geometry.totalVolume().toWholeLiters() + " L";
+            var state = network.getSolvedState();
+            if (state.isPresent()) {
+                message += String.format(java.util.Locale.ROOT, " | %.1f K, %.2f bar", state.get().temperatureKelvin(),
+                    state.get().pressurePa() / 100000);
+            } else {
+                message += inventory.isEmpty() ? " | 0 bar" : " | State unavailable";
+            }
+            long stroke = geometry.accumulatorVolume().toWholeLiters();
+            if (stroke > 0) message += " (hydrophore: " + stroke + " L)";
         }
-
+        aPlayer.addChatMessage(new net.minecraft.util.ChatComponentText(message));
         return true;
     }
 }

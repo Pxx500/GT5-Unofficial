@@ -1,5 +1,8 @@
 package gregtech.api.metatileentity.implementations.integratedfluid;
 
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
 import java.util.HashSet;
 import java.util.Optional;
 import java.util.Random;
@@ -10,10 +13,8 @@ import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidRegistry;
 import net.minecraftforge.fluids.FluidStack;
 
-import gregtech.api.metatileentity.implementations.integratedfluid.amount.EnergyAmount;
-import gregtech.api.metatileentity.implementations.integratedfluid.amount.SubstanceAmount;
+import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.implementations.integratedfluid.amount.VolumeAmount;
-import gregtech.api.metatileentity.implementations.integratedfluid.fluid.IFNFluidRegistry;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNFailureCandidateSelector;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNLimitWarningTracker;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNOperationalFailurePolicy;
@@ -23,13 +24,11 @@ import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNPre
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNPressureWarningTracker;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNTemperatureLimitEvaluation;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNTemperatureLimitStatus;
-import gregtech.api.metatileentity.implementations.integratedfluid.solver.IFNSolvedState;
-import gregtech.api.metatileentity.implementations.integratedfluid.solver.IFNStateSolver;
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNNetworkStatus;
-import gregtech.api.metatileentity.implementations.integratedfluid.thermal.IFNHeatExchangeRuntime;
-import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNMergePolicy;
-import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNTopologyRebuilder;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.ChamberVolume;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.ClosedFluidChamber;
+import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.PureFluid;
 import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNTopologySnapshot;
 
 /**
@@ -40,50 +39,21 @@ import gregtech.api.metatileentity.implementations.integratedfluid.topology.IFNT
 public class IntegratedFluidNetwork {
 
     /**
-     * Default pressure in bar.
-     */
-    public static final float DEFAULT_PRESSURE = 1.0f;
-
-    /**
-     * Default temperature in Kelvin (derived when empty).
+     * Default temperature for machine controls without a fluid reading.
      */
     public static final float DEFAULT_TEMPERATURE = 300.0f;
-
-    /**
-     * Fixed-point scale for amount (micro-units of mB/SL).
-     */
-    public static final long AMOUNT_SCALE = 1_000_000L;
-
-    /**
-     * Fixed-point scale for enthalpy (micro-EU).
-     */
-    public static final long ENTHALPY_SCALE = 1_000_000L;
 
     /**
      * Ambient temperature for heat loss calculations (in Kelvin).
      */
     public static final float AMBIENT_TEMPERATURE = 300.0f;
 
-    /**
-     * Heat loss per pipe per second per Kelvin difference.
-     * Each pipe loses 1 EU/(s·ΔT)
-     */
-    public static final float HEAT_LOSS_PER_PIPE_PER_SECOND = 1.0f;
+    /** Passive pipe conductance in EU per tick per kelvin of temperature difference. */
+    public static final double PIPE_CONDUCTANCE_EU_PER_TICK_KELVIN = 0.05;
+    private long ambientExchangeTick = Long.MIN_VALUE;
+    private long ambientHeatMicroEu;
 
-    /**
-     * Fluid identifier (null when empty).
-     */
-    private String fluidName;
-
-    /**
-     * Total amount A in fixed-point units.
-     */
-    private long amountQ;
-
-    /**
-     * Total enthalpy H in fixed-point units.
-     */
-    private long enthalpyQ;
+    private IFNCanonicalState inventory = IFNCanonicalState.empty();
 
     /**
      * All members (pipes and hatches) connected to this network.
@@ -94,20 +64,20 @@ public class IntegratedFluidNetwork {
      * Current pressure of the network in bar.
      */
     private float pressure;
-    private IFNSolvedState solvedStateCache;
+    private ClosedFluidChamber chamber;
+    private IFNTopologySnapshot topologySnapshot;
 
     private final UUID networkId;
+    private IntegratedFluidNetworkSavedData savedData;
     private boolean pending = false;
     private int expectedMemberCount = 0;
+    private long chamberBaseLiters;
+    private long chamberStrokeLiters;
     private String frozenReason;
     private final IFNPressureWarningTracker pressureWarningTracker = new IFNPressureWarningTracker();
     private final IFNLimitWarningTracker temperatureWarningTracker = new IFNLimitWarningTracker();
 
     public IntegratedFluidNetwork(UUID networkId) {
-        this.fluidName = null;
-        this.amountQ = 0L;
-        this.enthalpyQ = 0L;
-        this.pressure = DEFAULT_PRESSURE;
         this.networkId = networkId != null ? networkId : UUID.randomUUID();
     }
 
@@ -115,11 +85,21 @@ public class IntegratedFluidNetwork {
         this(UUID.randomUUID());
     }
 
+    void setSavedData(IntegratedFluidNetworkSavedData savedData) {
+        this.savedData = savedData;
+    }
+
+    private void persistState() {
+        if (savedData != null) {
+            savedData.upsertState(networkId, this);
+        }
+    }
+
     /**
      * Adds a member to this network.
      */
     public void addMember(IIntegratedFluidMember member) {
-        members.add(member);
+        if (members.add(member)) topologySnapshot = null;
         member.setNetwork(this);
         member.setNetworkId(networkId);
         updatePressure();
@@ -129,37 +109,16 @@ public class IntegratedFluidNetwork {
      * Removes a member from this network.
      */
     public void removeMember(IIntegratedFluidMember member) {
-        members.remove(member);
+        removeMember(member, inventory);
+    }
+
+    void removeMember(IIntegratedFluidMember member, IFNCanonicalState remaining) {
+        inventory = remaining;
+        if (members.remove(member)) topologySnapshot = null;
         if (member.getNetwork() == this) {
             member.setNetwork(null);
         }
         updatePressure();
-    }
-
-    /**
-     * Gets the current stored fluid.
-     */
-    public FluidStack getStoredFluid() {
-        Fluid fluid = getFluid();
-        int amount = getStoredAmount();
-        if (fluid == null || amount <= 0) {
-            return null;
-        }
-        return new FluidStack(fluid, amount);
-    }
-
-    /**
-     * Gets the current amount of fluid stored.
-     */
-    public int getStoredAmount() {
-        if (amountQ <= 0) {
-            return 0;
-        }
-        long amount = amountQ / AMOUNT_SCALE;
-        if (amount > Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        return (int) amount;
     }
 
     /**
@@ -180,10 +139,6 @@ public class IntegratedFluidNetwork {
 
     public IFNOperationalLimits getOperationalLimits() {
         return IFNOperationalLimits.fromMembers(members);
-    }
-
-    public float getAccumulatorMaxPressureBar() {
-        return getOperationalLimits().accumulatorMaxPressureBar();
     }
 
     public IFNPressureLimitEvaluation getPressureLimitEvaluation() {
@@ -289,317 +244,24 @@ public class IntegratedFluidNetwork {
         return (int) available;
     }
 
-    /**
-     * Attempts to add fluid to the network.
-     *
-     * @param fluid    The fluid to add
-     * @param simulate If true, only simulates the fill
-     * @return The amount of fluid actually added
-     */
-    public int addFluid(FluidStack fluid, boolean simulate) {
-        return addFluid(fluid, simulate, DEFAULT_TEMPERATURE);
-    }
-
-    /**
-     * Attempts to add fluid to the network with a specified temperature.
-     * Temperature is converted to enthalpy; network state remains (amount, enthalpy, pressure).
-     *
-     * @param fluid        The fluid to add
-     * @param simulate     If true, only simulates the fill
-     * @param incomingTemp The temperature of the incoming fluid in Kelvin
-     * @return The amount of fluid actually added
-     */
-    public int addFluid(FluidStack fluid, boolean simulate, float incomingTemp) {
-        if (isTransferBlocked()) {
-            return 0;
-        }
-        if (fluid == null || fluid.amount <= 0) {
-            return 0;
-        }
-        long addAmountQ = toAmountQ(fluid.amount);
-        long addEnthalpyQ = toEnthalpyQ(fluid.getFluid(), incomingTemp, addAmountQ);
-
-        if (!canAccept(fluid.getFluid(), addAmountQ, addEnthalpyQ)) {
-            return 0;
-        }
-
-        if (!simulate && !add(fluid.getFluid(), addAmountQ, addEnthalpyQ)) {
-            return 0;
-        }
-
-        return fluid.amount;
-    }
-
-    /**
-     * Attempts to drain fluid from the network.
-     *
-     * @param maxDrain The maximum amount to drain
-     * @param simulate If true, only simulates the drain
-     * @return The fluid that was drained
-     */
-    public FluidStack drainFluid(int maxDrain, boolean simulate) {
-        if (isTransferBlocked()) {
-            return null;
-        }
-        if (amountQ <= 0 || maxDrain <= 0) {
-            return null;
-        }
-
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return null;
-        }
-        long requestAmountQ = toAmountQ(Math.min(maxDrain, toAmountMb(amountQ)));
-        ExtractedPayload extracted = extractProportional(requestAmountQ, simulate);
-        if (extracted.amountQ <= 0) {
-            return null;
-        }
-
-        int drainedAmount = toAmountMb(extracted.amountQ);
-        if (drainedAmount <= 0) {
-            return null;
-        }
-        return new FluidStack(fluid, drainedAmount);
-    }
-
-    /**
-     * Drains a specific fluid from the network.
-     *
-     * @param fluid    The fluid to drain (must match stored fluid)
-     * @param simulate If true, only simulates the drain
-     * @return The fluid that was drained
-     */
-    public FluidStack drainFluid(FluidStack fluid, boolean simulate) {
-        if (isTransferBlocked()) {
-            return null;
-        }
-        if (fluid == null || amountQ <= 0) {
-            return null;
-        }
-        Fluid stored = getFluid();
-        if (stored == null || stored != fluid.getFluid()) {
-            return null;
-        }
-        return drainFluid(fluid.amount, simulate);
-    }
-
-    public boolean canAccept(Fluid fluid, long addAmountQ, long addEnthalpyQ) {
-        if (isTransferBlocked()) {
-            return false;
-        }
-        if (fluid == null || addAmountQ <= 0L) {
-            return false;
-        }
-        if (!IFNFluidRegistry.isSupported(fluid)) {
-            return false;
-        }
-        if (amountQ > 0L && !isCompatibleFluid(fluid.getName())) {
-            return false;
-        }
-
-        long nextAmountQ = amountQ + addAmountQ;
-        long nextEnthalpyQ = enthalpyQ + addEnthalpyQ;
-        double specificEnthalpy = toSpecificEnthalpy(nextEnthalpyQ, nextAmountQ);
-        double pGuess = IFNPressurePolicy.clampMinimum((double) pressure);
-        FluidThermalProperties.PhaseResult phase = FluidThermalProperties
-            .getPhaseFromPH(fluid, pGuess, specificEnthalpy);
-        int baseCapacity = getBaseCapacity();
-        int accumulatorCapacity = getAccumulatorCapacity();
-        int totalCapacity = getTotalCapacity();
-        if (totalCapacity <= 0) {
-            return false;
-        }
-
-        if (phase.phase == FluidThermalProperties.Phase.VAPOR
-            || phase.phase == FluidThermalProperties.Phase.SUPERCRITICAL) {
-            IFNPressureModel.PressureResult result = IFNPressureModel.compute(
-                fluid,
-                new IFNFluidState(fluid.getName(), nextAmountQ, nextEnthalpyQ, (float) pGuess),
-                currentPressureLimits());
-            return !result.isPressureLimitExceeded();
-        }
-
-        double specificVolume = IFNPressureModel.getLiquidSpecificVolumeAtBasePressure(fluid, specificEnthalpy);
-        double occupied = toAmount(nextAmountQ) * specificVolume;
-        double maxOccupied = IFNPressureModel.computeMaxSafeLiquidOccupiedVolume(
-            baseCapacity,
-            accumulatorCapacity,
-            totalCapacity,
-            getAccumulatorMaxPressureBar());
-        return occupied <= maxOccupied;
-    }
-
-    public float predictPressureAfterAdd(Fluid fluid, long addAmountQ, long addEnthalpyQ) {
-        return predictPressureAfterStateAdd(fluid, addAmountQ, addEnthalpyQ);
-    }
-
-    public float predictPressureAfterStateAdd(Fluid fluid, long addAmountQ, long addEnthalpyQ) {
-        if (fluid == null || addAmountQ <= 0L) return pressure;
-        IFNFluidState predicted = snapshotState().withAddedState(fluid, addAmountQ, addEnthalpyQ, pressure);
-        return computePressureForState(fluid, predicted.getAmountQ(), predicted.getEnthalpyQ(), pressure);
-    }
-
-    public float predictPressureAfterExtract(long requestAmountQ) {
-        if (amountQ <= 0L || requestAmountQ <= 0L) return pressure;
-
-        IFNFluidState predicted = snapshotState().withExtractedAmount(requestAmountQ, pressure);
-        return computePressureForState(getFluid(), predicted.getAmountQ(), predicted.getEnthalpyQ(), pressure);
-    }
-
-    public boolean add(Fluid fluid, long addAmountQ, long addEnthalpyQ) {
-        return addState(fluid, addAmountQ, addEnthalpyQ);
-    }
-
-    public boolean addState(Fluid fluid, long addAmountQ, long addEnthalpyQ) {
-        if (isTransferBlocked()) {
-            return false;
-        }
-        if (fluid == null || addAmountQ <= 0L) {
-            return false;
-        }
-        if (amountQ == 0L) {
-            fluidName = IFNFluidRegistry.canonicalSubstanceId(fluid.getName());
-        } else if (!isCompatibleFluid(fluid.getName())) {
-            return false;
-        }
-
-        amountQ += addAmountQ;
-        enthalpyQ += addEnthalpyQ;
-        updatePressure();
-        return true;
-    }
-
-    public ExtractedPayload extractProportional(long requestAmountQ, boolean simulate) {
-        if (isTransferBlocked() || amountQ <= 0L || requestAmountQ <= 0L) {
-            return ExtractedPayload.empty();
-        }
-        long gotAmountQ = Math.min(requestAmountQ, amountQ);
-
-        long gotEnthalpyQ;
-        if (gotAmountQ == amountQ) {
-            gotEnthalpyQ = enthalpyQ;
-        } else {
-            double fraction = (double) gotAmountQ / (double) amountQ;
-            gotEnthalpyQ = (long) (enthalpyQ * fraction);
-        }
-
-        if (!simulate) {
-            amountQ -= gotAmountQ;
-            enthalpyQ -= gotEnthalpyQ;
-
-            if (amountQ == 0L) {
-                clearFluid();
-            } else {
-                updatePressure();
-            }
-        }
-        return new ExtractedPayload(gotAmountQ, gotEnthalpyQ);
-    }
-
-    public ExtractedPayload extractPhase(long requestAmountQ, boolean wantVapor, boolean simulate) {
-        if (isTransferBlocked() || amountQ <= 0L || requestAmountQ <= 0L) {
-            return ExtractedPayload.empty();
-        }
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return ExtractedPayload.empty();
-        }
-        double specificEnthalpy = getSpecificEnthalpy();
-        double hf = IntegratedFluidThermoModel.saturatedLiquidEnthalpy(fluid, pressure);
-        double hg = IntegratedFluidThermoModel.saturatedVaporEnthalpy(fluid, pressure);
-        if (hg <= hf || specificEnthalpy <= hf || specificEnthalpy >= hg) {
-            return extractProportional(requestAmountQ, simulate);
-        }
-        double quality = (specificEnthalpy - hf) / (hg - hf);
-        double vaporAmount = quality * toAmount(amountQ);
-        double liquidAmount = toAmount(amountQ) - vaporAmount;
-        double available = wantVapor ? vaporAmount : liquidAmount;
-        long availableQ = toAmountQ(available);
-        long gotAmountQ = Math.min(requestAmountQ, availableQ);
-        if (gotAmountQ <= 0L) {
-            return ExtractedPayload.empty();
-        }
-        double specific = wantVapor ? hg : hf;
-        long gotEnthalpyQ = toEnthalpyQ(specific, gotAmountQ);
-
-        if (!simulate) {
-            float oldTemp = getDerivedTemperature();
-            FluidThermalProperties.PhaseResult currentPhase = FluidThermalProperties
-                .getPhaseFromPH(fluid, pressure, getSpecificEnthalpy());
-
-            amountQ -= gotAmountQ;
-            enthalpyQ -= gotEnthalpyQ;
-
-            if (amountQ < AMOUNT_SCALE) {
-                clearFluid();
-            } else {
-                updatePressure();
-
-                // ADIABATIC EXPANSION (Blowdown)
-                if (currentPhase.phase == FluidThermalProperties.Phase.VAPOR
-                    || currentPhase.phase == FluidThermalProperties.Phase.SUPERCRITICAL) {
-                    if (fluid != null) {
-                        double massRatio = (double) amountQ / (double) (amountQ + gotAmountQ);
-                        double newTemp = oldTemp * Math.pow(massRatio, 0.3);
-                        newTemp = Math.max(1.0, newTemp); // Prevent sub-absolute-zero physics breaking
-
-                        double newSpecificEnthalpy = FluidThermalProperties
-                            .getSpecificEnthalpyFromPT(fluid, pressure, newTemp);
-                        enthalpyQ = toEnthalpyQFromSpecific(newSpecificEnthalpy, amountQ);
-                        updatePressure();
-                    }
-                }
-            }
-        }
-        return new ExtractedPayload(gotAmountQ, gotEnthalpyQ);
-    }
-
     public Fluid getFluid() {
-        if (fluidName == null || amountQ <= 0L) {
-            return null;
-        }
-        IFNFluidThermalRegistration.init();
-        Fluid fluid = FluidRegistry.getFluid(fluidName);
-        if (fluid == null || !IFNFluidRegistry.isSupported(fluid)) {
-            clearFluid();
-            return null;
-        }
-        return fluid;
+        return inventory.isEmpty() || !hasSolvedFluid() ? null : FluidRegistry.getFluid(getFluidName());
     }
 
     public String getFluidName() {
-        return fluidName;
-    }
-
-    public IFNFluidState snapshotState() {
-        return new IFNFluidState(fluidName, amountQ, enthalpyQ, pressure);
-    }
-
-    void restoreSnapshot(IFNFluidState state) {
-        if (state == null || state.isEmpty()) {
-            clearFluid();
-            return;
-        }
-
-        this.fluidName = state.getFluidName();
-        this.amountQ = state.getAmountQ();
-        this.enthalpyQ = state.getEnthalpyQ();
-        updatePressure();
+        return inventory.fluidId().orElse(null);
     }
 
     public IFNCanonicalState getCanonicalState() {
-        return IFNCanonicalState
-            .of(fluidName, SubstanceAmount.fromRawUnits(amountQ), EnergyAmount.fromRawUnits(enthalpyQ));
+        return inventory;
     }
 
-    public IFNSolvedState getSolvedState() {
-        IFNSolvedState cached = solvedStateCache;
-        if (cached != null) {
-            return cached;
-        }
-        IFNSolvedState solved = IFNStateSolver.solveAtPressure(getFluid(), amountQ, enthalpyQ, pressure);
-        solvedStateCache = solved;
-        return solved;
+    public Optional<PureFluid.State> getSolvedState() {
+        return hasSolvedFluid() ? Optional.of(chamber.state()) : Optional.empty();
+    }
+
+    public boolean supportsFluidTemperature(double kelvin) {
+        return hasSolvedFluid() && chamber.supportsTemperature(kelvin);
     }
 
     public void replaceCanonicalState(IFNCanonicalState state) {
@@ -609,169 +271,37 @@ public class IntegratedFluidNetwork {
             return;
         }
 
-        this.fluidName = next.fluidId()
-            .get();
-        this.amountQ = next.substanceAmount()
-            .rawUnits();
-        this.enthalpyQ = next.internalEnergy()
-            .rawUnits();
+        inventory = next;
         updatePressure();
     }
 
     public IFNTopologySnapshot getTopologySnapshot() {
-        return IFNTopologyRebuilder.rebuild(members, expectedMemberCount)
-            .snapshot();
+        if (topologySnapshot == null) topologySnapshot = IFNTopologySnapshot.fromMembers(members, expectedMemberCount);
+        return topologySnapshot;
     }
 
     public long getAmountQ() {
-        return amountQ;
-    }
-
-    public long getEnthalpyQ() {
-        return enthalpyQ;
+        return inventory.substanceAmount().rawUnits();
     }
 
     public double getSpecificEnthalpy() {
-        if (amountQ <= 0L) {
-            return 0.0d;
-        }
-        return toSpecificEnthalpy(enthalpyQ, amountQ);
+        return hasSolvedFluid() ? chamber.state().specificEnthalpyEuPerKg() : 0;
     }
 
     public float getDerivedTemperature() {
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return DEFAULT_TEMPERATURE;
-        }
-        return IntegratedFluidThermoModel
-            .temperatureFromPressureAndSpecificEnthalpy(fluid, pressure, getSpecificEnthalpy());
+        return hasSolvedFluid() ? (float) chamber.state().temperatureKelvin() : DEFAULT_TEMPERATURE;
     }
 
     public double getSpecificVolume() {
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return 0.0d;
-        }
-        return IntegratedFluidThermoModel
-            .specificVolumeFromPressureAndSpecificEnthalpy(fluid, pressure, getSpecificEnthalpy());
-    }
-
-    public IntegratedFluidThermoModel.Phase getPhase() {
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return IntegratedFluidThermoModel.Phase.LIQUID;
-        }
-        return IntegratedFluidThermoModel.phaseFromPressureAndSpecificEnthalpy(fluid, pressure, getSpecificEnthalpy());
+        return hasSolvedFluid() ? chamber.volumeLiters() / chamber.massKg().doubleValue() : 0;
     }
 
     public double getQuality() {
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return 0.0d;
-        }
-        double hf = IntegratedFluidThermoModel.saturatedLiquidEnthalpy(fluid, pressure);
-        double hg = IntegratedFluidThermoModel.saturatedVaporEnthalpy(fluid, pressure);
-        if (hg <= hf) {
-            return 0.0d;
-        }
-        double h = getSpecificEnthalpy();
-        if (h <= hf) {
-            return 0.0d;
-        }
-        if (h >= hg) {
-            return 1.0d;
-        }
-        return (h - hf) / (hg - hf);
+        return hasSolvedFluid() ? chamber.state().vaporMassFraction() : 0;
     }
 
     public double getOccupiedVolume() {
-        if (amountQ <= 0L) {
-            return 0.0d;
-        }
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return 0.0d;
-        }
-        double specificEnthalpy = getSpecificEnthalpy();
-        FluidThermalProperties.PhaseResult phase = FluidThermalProperties
-            .getPhaseFromPH(fluid, pressure, specificEnthalpy);
-        if (phase.phase == FluidThermalProperties.Phase.VAPOR
-            || phase.phase == FluidThermalProperties.Phase.SUPERCRITICAL) {
-            return getTotalCapacity();
-        }
-        return toAmount(amountQ) * getSpecificVolume();
-    }
-
-    static long toAmountQ(int amount) {
-        return (long) amount * AMOUNT_SCALE;
-    }
-
-    private static long toAmountQ(double amount) {
-        return (long) Math.floor(amount * AMOUNT_SCALE);
-    }
-
-    private static double toAmount(long amountQ) {
-        return amountQ / (double) AMOUNT_SCALE;
-    }
-
-    static int toAmountMb(long amountQ) {
-        if (amountQ <= 0L) {
-            return 0;
-        }
-        long amount = amountQ / AMOUNT_SCALE;
-        if (amount > Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        return (int) amount;
-    }
-
-    private static long toEnthalpyQ(double energyEu) {
-        return (long) Math.round(energyEu * ENTHALPY_SCALE);
-    }
-
-    private static long toEnthalpyQ(Fluid fluid, float temperature, long amountQ) {
-        double specific = IntegratedFluidThermoModel.specificEnthalpyFromTemperature(fluid, temperature);
-        return toEnthalpyQ(specific, amountQ);
-    }
-
-    private static long toEnthalpyQ(double specificEnthalpy, long amountQ) {
-        double amount = toAmount(amountQ);
-        double energy = specificEnthalpy * amount;
-        return toEnthalpyQ(energy);
-    }
-
-    public static long toEnthalpyQFromSpecific(double specificEnthalpy, long amountQ) {
-        return toEnthalpyQ(specificEnthalpy, amountQ);
-    }
-
-    static double toSpecificEnthalpy(long enthalpyQ, long amountQ) {
-        if (amountQ <= 0L) {
-            return 0.0d;
-        }
-        double energy = enthalpyQ / (double) ENTHALPY_SCALE;
-        return energy / toAmount(amountQ);
-    }
-
-    public static final class ExtractedPayload {
-
-        public final long amountQ;
-        public final long enthalpyQ;
-
-        private ExtractedPayload(long amountQ, long enthalpyQ) {
-            this.amountQ = amountQ;
-            this.enthalpyQ = enthalpyQ;
-        }
-
-        public static ExtractedPayload empty() {
-            return new ExtractedPayload(0L, 0L);
-        }
-
-        public static ExtractedPayload of(long amountQ, long enthalpyQ) {
-            if (amountQ <= 0L) {
-                return empty();
-            }
-            return new ExtractedPayload(amountQ, enthalpyQ);
-        }
+        return hasSolvedFluid() ? chamber.volumeLiters() : 0;
     }
 
     /**
@@ -781,18 +311,14 @@ public class IntegratedFluidNetwork {
         return members.size();
     }
 
-    /**
-     * Gets the current pressure in bar.
-     */
-    public float getPressure() {
-        return pressure;
+    /** Absolute pressure for comparisons with physical machine chambers. */
+    public double getPressurePa() {
+        return chamber == null ? 0 : chamber.pressurePa();
     }
 
-    /**
-     * Sets the pressure in bar.
-     */
-    public void setPressure(float pressure) {
-        this.pressure = pressure;
+    /** Current pressure in bar. */
+    public float getPressure() {
+        return pressure;
     }
 
     /**
@@ -800,22 +326,6 @@ public class IntegratedFluidNetwork {
      */
     public float getTemperature() {
         return getDerivedTemperature();
-    }
-
-    /**
-     * Sets the temperature in Kelvin.
-     */
-    public void setTemperature(float temperature) {
-        if (amountQ <= 0) {
-            return;
-        }
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return;
-        }
-        double specificEnthalpy = IntegratedFluidThermoModel.specificEnthalpyFromTemperature(fluid, temperature);
-        enthalpyQ = toEnthalpyQ(specificEnthalpy, amountQ);
-        updatePressure();
     }
 
     public UUID getNetworkId() {
@@ -837,10 +347,12 @@ public class IntegratedFluidNetwork {
     public void freeze(String reason) {
         this.frozenReason = reason == null || reason.trim()
             .isEmpty() ? "frozen" : reason;
+        persistState();
     }
 
     public void clearFrozen() {
         this.frozenReason = null;
+        updatePressure();
     }
 
     public String getFrozenReason() {
@@ -862,27 +374,18 @@ public class IntegratedFluidNetwork {
     }
 
     public void setExpectedMemberCount(int expectedMemberCount) {
+        if (this.expectedMemberCount != expectedMemberCount) topologySnapshot = null;
         this.expectedMemberCount = expectedMemberCount;
-        invalidateSolvedState();
+        updatePressure();
     }
 
-    public void loadState(String fluidName, long amountQ, long enthalpyQ, float pressure, int expectedMembers) {
-        loadState(fluidName, amountQ, enthalpyQ, pressure, expectedMembers, null);
-    }
-
-    public void loadState(String fluidName, long amountQ, long enthalpyQ, float pressure, int expectedMembers,
-        String frozenReason) {
-        this.amountQ = Math.max(0L, amountQ);
-        this.enthalpyQ = enthalpyQ;
-        if (this.amountQ == 0L || fluidName == null
-            || fluidName.trim()
-                .isEmpty()) {
-            clearFluid();
-        } else {
-            this.fluidName = fluidName;
-        }
-        this.pressure = DEFAULT_PRESSURE;
+    void loadInventory(IFNCanonicalState inventory, int expectedMembers, long baseLiters, long strokeLiters, String frozenReason) {
+        this.inventory = inventory;
         this.expectedMemberCount = expectedMembers;
+        chamberBaseLiters = baseLiters;
+        chamberStrokeLiters = strokeLiters;
+        pending = members.size() < expectedMembers;
+        topologySnapshot = null;
         this.frozenReason = frozenReason == null || frozenReason.trim()
             .isEmpty() ? null : frozenReason;
         updatePressure();
@@ -893,11 +396,9 @@ public class IntegratedFluidNetwork {
      * Used during network splits to prevent duplication.
      */
     public void clearFluid() {
-        fluidName = null;
-        amountQ = 0L;
-        enthalpyQ = 0L;
-        pressure = DEFAULT_PRESSURE;
-        invalidateSolvedState();
+        inventory = IFNCanonicalState.empty();
+        pressure = 0.0f;
+        updatePressure();
     }
 
     /**
@@ -924,252 +425,356 @@ public class IntegratedFluidNetwork {
         return pipeCount;
     }
 
-    /**
-     * Applies heat loss to the network based on the number of pipes.
-     * Called every second (20 ticks) to gradually move temperature toward ambient.
-     *
-     * Heat loss formula:
-     * - Energy lost per second = pipeCount * 1 EU/(s*K) * (T - Tambient)
-     * - This shifts enthalpy toward ambient deterministically
-     */
-    public void applyHeatLoss(float ambientTemperature) {
-        if (amountQ <= 0) {
-            return;
-        }
+    void exchangeAmbientHeat(float ambientKelvin, long worldTick, int elapsedTicks) {
+        if (ambientExchangeTick == worldTick) return;
+        ambientExchangeTick = worldTick;
+        ambientHeatMicroEu = 0;
+        if (isIncompleteNetwork() || !hasSolvedFluid() || elapsedTicks <= 0 || !Float.isFinite(ambientKelvin)
+            || ambientKelvin < 0) return;
+        double budget = getTopologySnapshot().passiveConductanceEuPerTickKelvin() * elapsedTicks;
+        ambientHeatMicroEu = applyThermalContact(ambientKelvin, budget, ambientKelvin);
+    }
 
-        float temperature = getDerivedTemperature();
-        float temperatureDelta = temperature - ambientTemperature;
-        if (Math.abs(temperatureDelta) < 0.1f) {
-            return;
+    /** Exposes a shared machine circuit to the reservoir without debiting a second fluid inventory. */
+    public void exchangeThroughRadiator(double ambientKelvin, double conductanceEuPerTickKelvin, double stopKelvin) {
+        if (IFNNetworkTransferGate.isOperational(this) && hasSolvedFluid()) {
+            applyThermalContact(ambientKelvin, conductanceEuPerTickKelvin, stopKelvin);
         }
+    }
 
-        double conductance = IFNHeatExchangeRuntime.computePassiveConductance(members);
-        if (conductance <= 0.0d) {
-            return;
+    private long applyThermalContact(double ambientKelvin, double conductanceBudget, double stopKelvin) {
+        var next = chamber.exchangeWithAmbient(ambientKelvin, conductanceBudget, stopKelvin);
+        if (next == chamber) return 0;
+        long heat;
+        IFNCanonicalState ledger;
+        try {
+            ledger = IFNCanonicalState.fromChamber(next);
+            heat = Math.subtractExact(ledger.totalEnergy().rawUnits(), inventory.totalEnergy().rawUnits());
+        } catch (ArithmeticException outsideLedger) {
+            return 0;
         }
+        installChamber(next, ledger);
+        persistState();
+        return heat;
+    }
 
-        Fluid fluid = getFluid();
-        double amount = toAmount(amountQ);
-        double heatCapacity = FluidThermalProperties.getSpecificHeatCapacity(fluid) * amount;
-        double energyDelta = IFNHeatExchangeRuntime
-            .computeEnergyDelta(temperature, ambientTemperature, heatCapacity, conductance);
-        enthalpyQ += toEnthalpyQ(energyDelta);
-        updatePressure();
+    public long getAmbientExchangeTick() {
+        return ambientExchangeTick;
+    }
+
+    public long getAmbientHeatMicroEu() {
+        return ambientHeatMicroEu;
     }
 
     /**
-     * Merges another network into this one.
+     * Moves members only after the combined inventory has been validated.
      */
-    public void merge(IntegratedFluidNetwork other) {
-        if (other == null || other == this) {
-            return;
+    void absorb(Set<IntegratedFluidNetwork> participants, IFNCanonicalState combined) {
+        for (var donor : participants) {
+            if (donor == this) continue;
+            for (var member : donor.members) {
+                members.add(member);
+                member.setNetwork(this);
+                member.setNetworkId(networkId);
+            }
+            donor.members.clear();
+            donor.topologySnapshot = null;
+            donor.clearFluid();
         }
-        long otherAmountQ = other.amountQ;
-        long otherEnthalpyQ = other.enthalpyQ;
-        String otherFluidName = other.fluidName;
+        // Solve once against the final volume, never against a half-moved chamber
+        topologySnapshot = null;
+        replaceCanonicalState(combined);
+    }
 
-        if (!IFNMergePolicy.canMerge(getCanonicalState(), other.getCanonicalState())) {
-            freeze("fluid conflict");
-            other.freeze("fluid conflict");
-            return;
+    IFNCanonicalState inventoryIn(IFNTopologySnapshot part) {
+        return inventoryIn(part.chamberVolume());
+    }
+
+    private IFNCanonicalState inventoryIn(Optional<ChamberVolume> geometry) {
+        if (!hasSolvedFluid() || geometry.isEmpty()) return IFNCanonicalState.empty();
+        double pressurePa = chamber.pressurePa();
+        // Fluid follows occupied volume. Each hydrophore keeps its own stored mechanical energy
+        long microKg = BigDecimal.valueOf(getAmountQ()).multiply(BigDecimal.valueOf(geometry.get().litersAtPressure(pressurePa)))
+            .divide(BigDecimal.valueOf(chamber.volumeLiters()), 0, RoundingMode.DOWN).longValueExact();
+        if (microKg == 0) return IFNCanonicalState.empty();
+        BigDecimal springEu = BigDecimal.valueOf(geometry.get().elasticEnergyEu(pressurePa));
+        long microEu = chamber.internalEnergyEu().movePointRight(6).multiply(BigDecimal.valueOf(microKg))
+            .divide(BigDecimal.valueOf(getAmountQ()), MathContext.DECIMAL128)
+            .add(springEu.movePointRight(6)).setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+        return IFNCanonicalState.fromRaw(chamber.substance().id(), microKg, microEu);
+    }
+
+    boolean hasSolvedFluid() {
+        return chamber != null && !chamber.isEmpty();
+    }
+
+    int admit(FluidStack stack, boolean commit, double ambientKelvin) {
+        if (!IFNNetworkTransferGate.canInjectFromGtPipe(this) || chamber == null) return 0;
+        IFNForgeFluidProfile profile = IFNForgeFluidProfile.of(stack);
+        if (profile == null || stack.amount <= 0) return 0;
+        return settleExternal(profile.admit(chamber, stack.amount, ambientKelvin), commit);
+    }
+
+    FluidStack export(FluidStack requested, int maximumUnits, boolean commit, double ambientKelvin) {
+        if (!IFNNetworkTransferGate.canExtractToGtPipe(this) || !hasSolvedFluid() || maximumUnits <= 0) return null;
+        var profile = IFNForgeFluidProfile.outlet(chamber);
+        Fluid output = profile == null ? null : profile.forgeFluid();
+        if (output == null || requested != null && (requested.tag != null || requested.getFluid() != output)) return null;
+        int units = settleExternal(profile.discharge(chamber, maximumUnits, ambientKelvin), commit);
+        return units == 0 ? null : new FluidStack(output, units);
+    }
+
+    private int settleExternal(ClosedFluidChamber.StreamExchange exchange, boolean commit) {
+        if (exchange.units() == 0) return 0;
+        var next = exchange.chamber();
+        try {
+            var ledger = IFNCanonicalState.fromChamber(next);
+            if (commit) {
+                installChamber(next, ledger);
+                persistState();
+            }
+        } catch (ArithmeticException outOfRange) {
+            return 0;
         }
+        return exchange.units();
+    }
 
-        // Transfer all members to this network FIRST (this increases capacity)
-        for (IIntegratedFluidMember member : new HashSet<>(other.members)) {
-            other.removeMember(member);
-            addMember(member);
+    long meterTo(IntegratedFluidNetwork outlet, long packetMicroLiters, double maximumOutletPa) {
+        if (!canTransferTo(outlet)) return 0;
+        return commitMovedMass(outlet, chamber.meteredTransferTo(outlet.chamber, BigDecimal.valueOf(packetMicroLiters, 6), maximumOutletPa));
+    }
+
+    /** Fills a machine's physical chamber from this network, without crossing the Forge fluid boundary. */
+    public ClosedFluidChamber fillMachineChamber(ClosedFluidChamber machine, int packetLiters) {
+        if (!IFNNetworkTransferGate.canProvideToMachine(this) || !hasSolvedFluid()) return machine;
+        var move = chamber.meteredTransferTo(machine, BigDecimal.valueOf(packetLiters), Double.MAX_VALUE);
+        return settleMachinePort(machine, move, true);
+    }
+
+    /** Accepts only the portion a machine can discharge against this network and the loop pressure loss. */
+    public ClosedFluidChamber drainMachineChamber(ClosedFluidChamber machine, int packetLiters, double pressureDropPa) {
+        if (!IFNNetworkTransferGate.canReceiveFromMachine(this) || chamber == null) return machine;
+        var move = machine.meteredTransferWithLossTo(chamber, BigDecimal.valueOf(packetLiters), pressureDropPa);
+        return settleMachinePort(machine, move, false);
+    }
+
+    public ClosedFluidChamber.SplitCharge fillSplitChambers(ClosedFluidChamber primary, ClosedFluidChamber partner,
+        int liters, double primaryShare) {
+        if (!IFNNetworkTransferGate.canProvideToMachine(this) || !hasSolvedFluid()) return null;
+        var next = chamber.splitChargeTo(primary, partner, liters, primaryShare);
+        if (next.source() == chamber) return null;
+        IFNCanonicalState ledger;
+        try {
+            IFNCanonicalState.fromChamber(next.first());
+            IFNCanonicalState.fromChamber(next.second());
+            ledger = IFNCanonicalState.fromChamber(next.source());
+        } catch (ArithmeticException outsideRange) {
+            return null;
         }
+        installChamber(next.source(), ledger);
+        persistState();
+        return next;
+    }
 
-        if (otherAmountQ > 0L && otherFluidName != null) {
-            if (amountQ <= 0L) {
-                fluidName = otherFluidName;
-                amountQ = otherAmountQ;
-                enthalpyQ = otherEnthalpyQ;
-            } else if (otherFluidName.equals(fluidName)) {
-                amountQ += otherAmountQ;
-                enthalpyQ += otherEnthalpyQ;
+    public record WorkingPair(ClosedFluidChamber primary, ClosedFluidChamber partner) {}
+
+    /** Each inlet meters its own source liters. Install both debits only after both charges fit. */
+    public WorkingPair fillIndependentChambers(IntegratedFluidNetwork other, ClosedFluidChamber primary,
+        ClosedFluidChamber partner, int liters) {
+        if (other == null || other == this || !IFNNetworkTransferGate.canProvideToMachine(this)
+            || !IFNNetworkTransferGate.canProvideToMachine(other) || !hasSolvedFluid() || !other.hasSolvedFluid()) return null;
+        var limit = BigDecimal.valueOf(liters);
+        var first = chamber.meteredTransferTo(primary, limit, Double.MAX_VALUE);
+        if (first.transferredMassKg().signum() == 0) return null;
+        var second = other.chamber.meteredTransferTo(partner, limit, Double.MAX_VALUE);
+        if (second.transferredMassKg().signum() == 0) return null;
+        try {
+            IFNCanonicalState.fromChamber(first.receiver());
+            IFNCanonicalState.fromChamber(second.receiver());
+        } catch (ArithmeticException outsideRange) {
+            return null;
+        }
+        return commitPair(other, first.source(), second.source()) ? new WorkingPair(first.receiver(), second.receiver()) : null;
+    }
+
+    private ClosedFluidChamber settleMachinePort(ClosedFluidChamber previous, ClosedFluidChamber.FluidTransfer move,
+        boolean fillingMachine) {
+        if (move.transferredMassKg().signum() == 0) return previous;
+        var retained = fillingMachine ? move.receiver() : move.source();
+        var network = fillingMachine ? move.source() : move.receiver();
+        IFNCanonicalState ledger;
+        try {
+            IFNCanonicalState.fromChamber(retained);
+            ledger = IFNCanonicalState.fromChamber(network);
+        } catch (ArithmeticException outsideRange) {
+            return previous;
+        }
+        installChamber(network, ledger);
+        persistState();
+        return retained;
+    }
+
+    long drawVaporTo(IntegratedFluidNetwork outlet, BigDecimal maximumLiters) {
+        if (!canTransferTo(outlet)) return 0;
+        return commitMovedMass(outlet, chamber.meteredVaporTo(outlet.chamber, maximumLiters));
+    }
+
+    private boolean canTransferTo(IntegratedFluidNetwork outlet) {
+        return outlet != this && IFNNetworkTransferGate.isOperational(this) && IFNNetworkTransferGate.isOperational(outlet)
+            && chamber != null && outlet.chamber != null;
+    }
+
+    private long commitMovedMass(IntegratedFluidNetwork outlet, ClosedFluidChamber.FluidTransfer move) {
+        if (move.transferredMassKg().signum() == 0) return 0;
+        return commitPair(outlet, move.source(), move.receiver()) ? move.transferredMassKg().movePointRight(6).longValueExact() : 0;
+    }
+
+    long heatFromElectricity(IGregTechTileEntity supply, long maximumEu) {
+        long eu = Math.min(maximumEu, supply.getStoredEU());
+        if (eu <= 0 || !IFNNetworkTransferGate.isOperational(this) || !hasSolvedFluid()) return 0;
+        var next = chamber.heatByUpTo(eu);
+        if (next == chamber) return 0;
+        IFNCanonicalState ledger;
+        long accepted = next.totalEnergyEu().subtract(chamber.totalEnergyEu()).longValueExact();
+        try {
+            ledger = IFNCanonicalState.fromChamber(next);
+        } catch (ArithmeticException outsideRange) {
+            return 0;
+        }
+        if (!supply.decreaseStoredEnergyUnits(accepted, false)) return 0;
+        installChamber(next, ledger);
+        persistState();
+        return accepted;
+    }
+
+    long pumpLiquidTo(IntegratedFluidNetwork outlet, IGregTechTileEntity supply, BigDecimal strokeLiters,
+        double outletPa, double availableRisePa, long maximumEu) {
+        if (!canTransferTo(outlet)) return 0;
+        var moved = chamber.pumpLiquidTo(outlet.chamber, strokeLiters, outletPa, availableRisePa,
+            Math.min(maximumEu, supply.getStoredEU()));
+        long cost = -moved.shaftWorkEu();
+        return cost > 0 && commitPair(outlet, moved.source(), moved.receiver(),
+            () -> supply.decreaseStoredEnergyUnits(cost, false)) ? cost : 0;
+    }
+
+    ClosedFluidChamber.FluidTransfer expandTo(IntegratedFluidNetwork outlet, BigDecimal maximumLiters, ClosedFluidChamber.ExpansionStage stage,
+        long workBudgetEu) {
+        if (!canTransferTo(outlet) || chamber.substance() != PureFluid.water() || workBudgetEu <= 0) return null;
+        var move = chamber.expandTo(outlet.chamber, maximumLiters, stage, workBudgetEu);
+        return move.shaftWorkEu() > 0 && commitPair(outlet, move.source(), move.receiver()) ? move : null;
+    }
+
+    void bypassSteamTo(IntegratedFluidNetwork outlet, BigDecimal liters) {
+        if (canTransferTo(outlet) && chamber.substance() == PureFluid.water() && !chamber.isEmpty()
+            && (chamber.state().vaporMassFraction() > 0 || chamber.state().denseRegion() != PureFluid.DenseRegion.NONE))
+            commitMovedMass(outlet, chamber.meteredTransferTo(outlet.chamber, liters, Double.MAX_VALUE));
+    }
+
+    long conductHeatTo(IntegratedFluidNetwork other, double conductanceBudgetEuPerKelvin) {
+        if (other == this || !IFNNetworkTransferGate.isOperational(this) || !IFNNetworkTransferGate.isOperational(other)
+            || !hasSolvedFluid() || !other.hasSolvedFluid()) return 0;
+        var exchange = chamber.conductHeat(other.chamber, conductanceBudgetEuPerKelvin);
+        if (exchange.heatToFirstEu().signum() == 0) return 0;
+        long toOther = exchange.heatToFirstEu().negate().movePointRight(6).longValueExact();
+        return commitPair(other, exchange.first(), exchange.second()) ? toOther : 0;
+    }
+
+    private boolean commitPair(IntegratedFluidNetwork outlet, ClosedFluidChamber sourceChamber, ClosedFluidChamber outletChamber) {
+        return commitPair(outlet, sourceChamber, outletChamber, () -> true);
+    }
+
+    private boolean commitPair(IntegratedFluidNetwork outlet, ClosedFluidChamber sourceChamber, ClosedFluidChamber outletChamber,
+        java.util.function.BooleanSupplier pay) {
+        IFNCanonicalState sourceAfter;
+        IFNCanonicalState outletAfter;
+        try {
+            sourceAfter = IFNCanonicalState.fromChamber(sourceChamber);
+            outletAfter = IFNCanonicalState.fromChamber(outletChamber);
+        } catch (ArithmeticException outOfRange) {
+            return false;
+        }
+        // Both ledgers must be representable before either network changes
+        if (!pay.getAsBoolean()) return false;
+        installChamber(sourceChamber, sourceAfter);
+        outlet.installChamber(outletChamber, outletAfter);
+        persistState();
+        outlet.persistState();
+        return true;
+    }
+
+
+    private void installChamber(ClosedFluidChamber next, IFNCanonicalState ledger) {
+        inventory = ledger;
+        chamber = next;
+        pressure = (float) (next.pressurePa() / 100_000);
+    }
+
+    long chamberBaseLiters() {
+        return chamberBaseLiters;
+    }
+
+    long chamberStrokeLiters() {
+        return chamberStrokeLiters;
+    }
+
+    void suspendMember(IIntegratedFluidMember member) {
+        if (!members.remove(member)) return;
+        expectedMemberCount = Math.max(expectedMemberCount, members.size() + 1);
+        pending = true;
+        topologySnapshot = null;
+        member.setNetwork(null);
+        // Unloading changes visibility, not mass, energy or physical geometry
+        persistState();
+    }
+
+    void resumeMember(IIntegratedFluidMember member) {
+        if (!members.add(member)) return;
+        topologySnapshot = null;
+        member.setNetwork(this);
+        pending = members.size() < expectedMemberCount;
+        if (!pending) updatePressure();
+    }
+
+    void destroyWhileIncomplete(IIntegratedFluidMember member) {
+        long base = chamberBaseLiters - member.getCapacityContribution();
+        long stroke = chamberStrokeLiters - member.getAccumulatorContribution();
+        if (base < 0 || stroke < 0) throw new IllegalStateException("Removed VFN volume exceeds saved geometry");
+        var remaining = base == chamberBaseLiters && stroke == chamberStrokeLiters ? inventory
+            : inventoryIn(IFNTopologySnapshot.chamberVolume(base, stroke));
+        chamberBaseLiters = base;
+        chamberStrokeLiters = stroke;
+        expectedMemberCount--;
+        removeMember(member, remaining);
+        member.setNetworkId(null);
+    }
+
+    private void updatePressure() {
+        var topology = getTopologySnapshot();
+        if (!topology.incomplete()) {
+            chamberBaseLiters = topology.baseVolume().toWholeLiters();
+            chamberStrokeLiters = topology.accumulatorVolume().toWholeLiters();
+        }
+        var geometry = IFNTopologySnapshot.chamberVolume(chamberBaseLiters, chamberStrokeLiters);
+        chamber = null;
+        pressure = 0;
+        var model = inventory.isEmpty() ? Optional.of(PureFluid.water()) : PureFluid.forSubstance(getFluidName());
+        if (model.isEmpty()) {
+            if (frozenReason == null) frozenReason = "Unsupported VFN substance: " + getFluidName();
+        } else if (geometry.isPresent()) {
+            try {
+                chamber = ClosedFluidChamber.of(model.get(), inventory.substanceAmount().kilograms(),
+                    geometry.get(), BigDecimal.valueOf(inventory.totalEnergy().rawUnits(), 6));
+                pressure = (float) (chamber.pressurePa() / 100_000);
+            } catch (IllegalArgumentException invalid) {
+                frozenReason = "Inventory outside supported chamber geometry";
             }
         }
-
-        other.clearFluid();
-        updatePressure();
+        persistState();
     }
 
-    /**
-     * Updates pressure based on current network state (A, H) and capacity.
-     *
-     * Pressure is derived from the network state (A,H) plus capacities. For liquid/two-phase we use an
-     * accumulator overfill curve (temporary model). For vapor/supercritical we use a simple
-     * ideal-gas-like rule. This provides pressure compliance between machines without explicit
-     * inter-machine communication.
-     */
-    private void updatePressure() {
-        Fluid fluid = getFluid();
-        pressure = computePressureForState(fluid, amountQ, enthalpyQ, pressure);
-        invalidateSolvedState();
-    }
-
-    private void invalidateSolvedState() {
-        solvedStateCache = null;
-    }
 
     private boolean isIncompleteNetwork() {
         return pending || (expectedMemberCount > 0 && members.size() < expectedMemberCount);
-    }
-
-    private boolean isTransferBlocked() {
-        return pending || isFrozen();
-    }
-
-    private IFNPressureModel.NetworkLimits currentPressureLimits() {
-        return IFNPressureModel.NetworkLimits.of(
-            getBaseCapacity(),
-            getAccumulatorCapacity(),
-            getTotalCapacity(),
-            getAccumulatorMaxPressureBar(),
-            isIncompleteNetwork());
-    }
-
-    private long computeMaxRetainableAmountQ(Fluid fluid, long currentAmountQ, long currentEnthalpyQ) {
-        if (fluid == null || currentAmountQ < AMOUNT_SCALE) {
-            return 0L;
-        }
-
-        int baseCapacity = getBaseCapacity();
-        int accumulatorCapacity = getAccumulatorCapacity();
-        int totalCapacity = getTotalCapacity();
-        if (totalCapacity <= 0) {
-            return 0L;
-        }
-
-        double specificEnthalpy = toSpecificEnthalpy(currentEnthalpyQ, currentAmountQ);
-        double pGuess = IFNPressurePolicy.clampMinimum((double) pressure);
-        FluidThermalProperties.PhaseResult phase = FluidThermalProperties
-            .getPhaseFromPH(fluid, pGuess, specificEnthalpy);
-
-        if (phase.phase == FluidThermalProperties.Phase.VAPOR
-            || phase.phase == FluidThermalProperties.Phase.SUPERCRITICAL) {
-            double pLimit = IFNPressurePolicy.clampMinimum((double) getAccumulatorMaxPressureBar());
-            double temperature = FluidThermalProperties.getTemperatureFromPH(
-                fluid,
-                IFNPressurePolicy.clampMinimum(Math.min(pGuess, pLimit)),
-                specificEnthalpy);
-            if (temperature <= 0.0d || Double.isNaN(temperature) || Double.isInfinite(temperature)) {
-                return 0L;
-            }
-            double maxAmount = totalCapacity * (pLimit / IntegratedFluidThermoModel.BASE_PRESSURE)
-                * (IntegratedFluidThermoModel.BASE_TEMPERATURE / temperature);
-            return toAmountQ(maxAmount);
-        }
-
-        double specificVolume = IFNPressureModel.getLiquidSpecificVolumeAtBasePressure(fluid, specificEnthalpy);
-        double maxOccupied = IFNPressureModel.computeMaxSafeLiquidOccupiedVolume(
-            baseCapacity,
-            accumulatorCapacity,
-            totalCapacity,
-            getAccumulatorMaxPressureBar());
-        return toAmountQ(maxOccupied / specificVolume);
-    }
-
-    public long getMaxRetainableAmountQ() {
-        if (amountQ < AMOUNT_SCALE) {
-            return 0L;
-        }
-        if (isIncompleteNetwork()) {
-            return amountQ;
-        }
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return 0L;
-        }
-        return computeMaxRetainableAmountQ(fluid, amountQ, enthalpyQ);
-    }
-
-    public long getMaxAddableAmountQ(Fluid fluid, double incomingSpecificEnthalpy, long maxCandidateAmountQ) {
-        if (isTransferBlocked() || fluid == null || maxCandidateAmountQ <= 0L) {
-            return 0L;
-        }
-        if (!IFNFluidRegistry.isSupported(fluid)) {
-            return 0L;
-        }
-        if (amountQ > 0L && !isCompatibleFluid(fluid.getName())) {
-            return 0L;
-        }
-
-        long high = maxCandidateAmountQ;
-        long highEnthalpyQ = toEnthalpyQFromSpecific(incomingSpecificEnthalpy, high);
-        if (canAccept(fluid, high, highEnthalpyQ)) {
-            return high;
-        }
-
-        long low = 1L;
-        long best = 0L;
-        for (int i = 0; i < IFNPressurePolicy.TRANSFER_SEARCH_ITERATIONS; i++) {
-            if (low > high) {
-                break;
-            }
-
-            long mid = (low + high) / 2L;
-            long midEnthalpyQ = toEnthalpyQFromSpecific(incomingSpecificEnthalpy, mid);
-            if (canAccept(fluid, mid, midEnthalpyQ)) {
-                best = mid;
-                low = mid + 1L;
-            } else {
-                high = mid - 1L;
-            }
-        }
-
-        return best;
-    }
-
-    private float computePressureForState(Fluid fluid, long nextAmountQ, long nextEnthalpyQ, float currentPressure) {
-        IFNPressureModel.PressureResult result = IFNPressureModel.compute(
-            fluid,
-            new IFNFluidState(fluid == null ? null : fluid.getName(), nextAmountQ, nextEnthalpyQ, currentPressure),
-            currentPressureLimits());
-        return result.getPressureBar();
-    }
-
-    private boolean isCompatibleFluid(String incomingFluidName) {
-        return fluidName != null && IFNFluidRegistry.isSameSubstance(fluidName, incomingFluidName);
-    }
-
-    /**
-     * Caps the stored fluid to the network's maximum capacity.
-     * Call this after removing members to prevent overflow.
-     *
-     * @return The amount of fluid that was removed (voided)
-     */
-    public int capFluidToCapacity() {
-        if (amountQ < AMOUNT_SCALE || isIncompleteNetwork()) {
-            return 0;
-        }
-
-        Fluid fluid = getFluid();
-        if (fluid == null) {
-            return 0;
-        }
-
-        long originalAmountQ = amountQ;
-        long originalEnthalpyQ = enthalpyQ;
-        long maxAmountQ = getMaxRetainableAmountQ();
-
-        if (maxAmountQ >= originalAmountQ) {
-            return 0;
-        }
-
-        if (maxAmountQ < AMOUNT_SCALE) {
-            int removed = toAmountMb(originalAmountQ);
-            clearFluid();
-            return removed;
-        }
-
-        double specificEnthalpy = toSpecificEnthalpy(originalEnthalpyQ, originalAmountQ);
-        amountQ = maxAmountQ;
-        enthalpyQ = toEnthalpyQFromSpecific(specificEnthalpy, maxAmountQ);
-        updatePressure();
-
-        return toAmountMb(originalAmountQ - maxAmountQ);
     }
 
     /**
