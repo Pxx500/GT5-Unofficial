@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 HOLDERS = (
     "AmbientTests", "BoilerTests", "ChunkTests", "ExchangerTests", "HeatPumpTests",
-    "DensePlantTests", "InjectorTests", "MaintenanceTests", "PressureLineTests", "RadiatorTests", "TurbineTests", "VaporOutletTests", "WaterLineTests",
+    "DensePlantTests", "InjectorTests", "LiquidPumpTests", "MaintenanceTests", "PressureLineTests", "RadiatorTests", "TurbineTests", "VaporOutletTests", "WaterLineTests",
 )
 
 
@@ -22,8 +22,8 @@ def main():
                         help="confirm acceptance of the Minecraft EULA for this server")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--tests", help="Horizon QA selector (default: all VFN server groups)")
-    mode.add_argument("--restart", nargs="?", const="water", choices=("water", "oxygen"),
-                      help="restart a dedicated server with an unfinished water or oxygen heat pump batch")
+    mode.add_argument("--restart", nargs="?", const="water", choices=("water", "oxygen", "radiator"),
+                      help="restart a dedicated server with an unfinished heat pump or radiator batch")
     parser.add_argument("--offline", action="store_true", help="use cached dependencies for both Gradle builds")
     parser.add_argument("--report-dir", type=Path, help="new report directory (default: assigned by Horizon QA)")
     args = parser.parse_args()
@@ -53,8 +53,11 @@ def main():
             parser.error("restart reports must be new directories")
         checkpoint = first / "expected.properties"
         command.append("--gradle-argument=--mcJvmArgs=-Dvfn.qa.restartCheckpoint=" + str(checkpoint))
-        before, after = (("stopWithOxygenCharge", "finishOxygenCharge") if args.restart == "oxygen"
-                         else ("stopWithPartlyPaidCharge", "finishPartlyPaidCharge"))
+        before, after = {
+            "water": ("stopWithPartlyPaidCharge", "finishPartlyPaidCharge"),
+            "oxygen": ("stopWithOxygenCharge", "finishOxygenCharge"),
+            "radiator": ("stopWithRadiatorCharge", "finishRadiatorCharge"),
+        }[args.restart]
         run_restart_stage(command, first, before, ["--keep-runtime-files"])
         worlds = list((first / "game").glob("*/level.dat"))
         if len(worlds) != 1 or not checkpoint.is_file():

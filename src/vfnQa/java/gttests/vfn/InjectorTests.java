@@ -50,9 +50,10 @@ public class InjectorTests {
             helper.assertEquals(1, cold.fill(ForgeDirection.EAST, new FluidStack(FluidRegistry.WATER, 1), true), "Feedwater");
         }
 
-        void requireMeteredPressure(GameTestHelper helper) {
-            float pressure = outlet.getNetwork().getPressure();
-            helper.assertTrue(pressure >= 0.079f && pressure <= 0.08f, "Regulated pressure in bar: " + pressure);
+        void requireSteamDelivery(GameTestHelper helper) {
+            long delivered = outlet.getNetwork().getAmountQ() - 1_000_000;
+            helper.assertTrue(delivered > 0 && delivered % 6250 == 0, "Whole steam portions reached the feedwater: " + delivered);
+            helper.assertTrue(outlet.getNetwork().getPressure() <= valve.getSetpointPressureBar(), "No pressure overshoot");
         }
     }
 
@@ -105,7 +106,7 @@ public class InjectorTests {
                     "Disconnected outlet gains no energy");
                 helper.assertTrue(outlet.connect(ForgeDirection.WEST) > 0, "Pipe connects to the regulator face");
             })
-            .thenWaitUntil(() -> bench.requireMeteredPressure(helper))
+            .thenWaitUntil(() -> bench.requireSteamDelivery(helper))
             .thenExecute(() -> {
                 var a = source.getNetwork();
                 var b = outlet.getNetwork();
@@ -184,6 +185,15 @@ public class InjectorTests {
         var receiverHeat = new AmbientTests.AmbientMeter(helper, outlet::getNetwork);
         long supply = 15_000_000_000L, charge = 10_700_000_000L;
         long[] stoppedMass = { 0 }, initialEnergy = { 0 };
+        var tile = outlet.getBaseMetaTileEntity();
+        var detector = (gregtech.common.covers.CoverIFNPressureDetector) gregtech.api.covers.CoverRegistry.buildCover(
+            gregtech.api.enums.ItemList.Cover_IFNPressureDetector.get(1), ForgeDirection.NORTH, tile);
+        detector.setRange(2.15, 3);
+        tile.attachCover(detector);
+        var pos = helper.absolute("outlet");
+        var world = helper.getWorld();
+        java.util.function.IntSupplier signal = () -> world.getBlock(pos.x(), pos.y(), pos.z())
+            .isProvidingWeakPower(world, pos.x(), pos.y(), pos.z(), ForgeDirection.SOUTH.ordinal());
         helper.startSequence().thenWaitUntil(() -> helper.assertTrue(source.getNetwork() != null && outlet.getNetwork() != null
             && source.getNetwork() != outlet.getNetwork() && inlet.getNetwork() == source.getNetwork()
             && receiver.getNetwork() == outlet.getNetwork(), "Two separate hydrophores"))
@@ -210,11 +220,32 @@ public class InjectorTests {
             .thenExecute(() -> {
                 var a = source.getNetwork();
                 var b = outlet.getNetwork();
-                helper.assertTrue(b.getPressurePa() > 214999 && b.getPressurePa() <= 215000.01,
+                helper.assertTrue(b.getPressurePa() >= 210000 && b.getPressurePa() < 215000,
                     "Oversized stroke is trimmed to the pressure ceiling: " + b.getPressurePa() + " Pa");
+                stoppedMass[0] = b.getAmountQ();
+                helper.assertEquals(0L, (stoppedMass[0] - charge) % 1_000_000L, "No fractional kilogram used to hit a setpoint");
                 helper.assertEquals(supply + charge, a.getAmountQ() + b.getAmountQ(), "Metered liquid mass");
                 helper.assertEquals(initialEnergy[0], sourceHeat.withoutAmbient(a) + receiverHeat.withoutAmbient(b), "Fluid and spring energy");
                 helper.recordDiagnostic("Large stroke ended at " + b.getPressurePa() + " Pa");
+                valve.setSetpointPressureCentibar(215);
+                valve.setOvershootToleranceCentibar(0);
+            }).thenIdle(25).thenExecute(() -> {
+                helper.assertTrue(outlet.getNetwork().getPressurePa() < 215000 && source.getNetwork().getPressure() > 4,
+                    "Valve is below its setpoint and the supply still has head");
+                helper.assertEquals(stoppedMass[0], outlet.getNetwork().getAmountQ(), "No part of the next kilogram fits");
+                helper.assertEquals(0, signal.getAsInt(), "Pressure cover reports below threshold");
+                valve.setMaxPacketAmountL(2);
+                valve.setOvershootToleranceCentibar(1);
+            }).thenWaitUntil(() -> helper.assertEquals(15, signal.getAsInt(), "Cover detects the first portion across 2.15 bar: "
+                + outlet.getNetwork().getPressurePa() + " Pa, added " + (outlet.getNetwork().getAmountQ() - stoppedMass[0]) + " microkg"))
+            .thenExecute(() -> {
+                var b = outlet.getNetwork();
+                helper.assertEquals(stoppedMass[0] + 1_000_000L, b.getAmountQ(), "Exactly one more liquid portion");
+                helper.assertTrue(b.getPressurePa() > 215000 && b.getPressurePa() <= 216000, "That portion needed the tolerance");
+                helper.assertEquals(supply + charge, source.getNetwork().getAmountQ() + b.getAmountQ(), "Final mass ledger");
+                helper.assertEquals(initialEnergy[0], sourceHeat.withoutAmbient(source.getNetwork()) + receiverHeat.withoutAmbient(b),
+                    "Final energy ledger");
+                helper.recordDiagnostic("One more kilogram: " + b.getPressurePa() + " Pa");
             }).thenSucceed();
     }
 
@@ -528,13 +559,20 @@ public class InjectorTests {
         var source = helper.absolute("source");
         placeAt(helper.getWorld(), source.x(), source.y(), source.z() + 1, (short) 5771, ForgeDirection.NORTH);
         bench.source().connect(ForgeDirection.SOUTH);
+        var outlet = helper.absolute("outlet");
+        placeAt(helper.getWorld(), outlet.x(), outlet.y(), outlet.z() + 1, (short) 5771, ForgeDirection.NORTH);
+        bench.outlet().connect(ForgeDirection.SOUTH);
         var sourceHeat = new AmbientTests.AmbientMeter(helper, bench.source()::getNetwork);
         var outletHeat = new AmbientTests.AmbientMeter(helper, bench.outlet()::getNetwork);
         long[] initial = new long[1];
         helper.startSequence().thenWaitUntil(() -> bench.requireNetworks(helper)).thenExecute(() -> {
-            helper.assertEquals(3, bench.injector().fill(ForgeDirection.WEST, FluidRegistry.getFluidStack(gas, 3), true),
+            bench.valve().setSetpointPressureCentibar(20);
+            helper.assertEquals(6, bench.injector().fill(ForgeDirection.WEST, FluidRegistry.getFluidStack(gas, 6), true),
                 "GT gas fills the inlet: " + gas);
             initial[0] = sourceHeat.withoutAmbient(bench.source().getNetwork()) + outletHeat.withoutAmbient(bench.outlet().getNetwork());
+        }).thenIdle(25).thenExecute(() -> {
+            helper.assertEquals(0L, bench.outlet().getNetwork().getAmountQ(), "100 L does not contain a whole gas portion");
+            bench.valve().setMaxPacketAmountL(2000);
         }).thenWaitUntil(() -> helper.assertTrue(bench.outlet().getNetwork().getAmountQ() > 0, "Gas crossed the physical valve"))
             .thenIdle(25).thenExecute(() -> {
             var a = bench.source().getNetwork();
@@ -542,7 +580,8 @@ public class InjectorTests {
             helper.assertEquals(gas, b.getFluidName(), "Downstream receives the same material");
             helper.assertTrue(b.getPressure() > 0 && b.getPressure() <= bench.valve().getSetpointPressureBar()
                 && a.getPressure() > b.getPressure(), "Valve limits downstream pressure with head still available");
-            helper.assertEquals(3 * unitMass, a.getAmountQ() + b.getAmountQ(), "No mass crosses the external boundary twice");
+            helper.assertEquals(unitMass, b.getAmountQ(), "One whole gas portion reached the receiver");
+            helper.assertEquals(6 * unitMass, a.getAmountQ() + b.getAmountQ(), "No mass crosses the external boundary twice");
             helper.assertEquals(initial[0], sourceHeat.withoutAmbient(a) + outletHeat.withoutAmbient(b), "Valve conserves transported energy");
             assertDiskInventory(helper, helper.getWorld(), b);
             helper.recordDiagnostic("Retained " + gas + " microkg=" + b.getAmountQ() + ", outlet Pa=" + b.getPressurePa());

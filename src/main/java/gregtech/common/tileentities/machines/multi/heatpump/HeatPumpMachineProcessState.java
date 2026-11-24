@@ -163,28 +163,28 @@ public final class HeatPumpMachineProcessState {
 
     public boolean discharge(IntegratedFluidNetwork outlet, IntegratedFluidNetwork secondOutlet) {
         if (!ready()) return false;
-        boolean moved = false;
+        boolean progressed = false;
         if (!primaryDelivered && outlet != null) {
             var next = outlet.drainMachineChamber(chamber, VOLUME_L, 0);
-            if (next != chamber) {
+            if (next.finished()) {
                 primaryDelivered = true;
-                chamber = next;
-                moved = true;
+                chamber = next.remaining();
+                progressed = true;
             }
         }
         if (layout != Layout.SINGLE && !partnerDelivered && secondOutlet != null) {
             var next = secondOutlet.drainMachineChamber(partner, VOLUME_L, 0);
-            if (next != partner) {
+            if (next.finished()) {
                 partnerDelivered = true;
-                partner = next;
-                moved = true;
+                partner = next.remaining();
+                progressed = true;
             }
         }
         if (primaryDelivered && (layout == Layout.SINGLE || partnerDelivered)) {
             active = false;
             ready = false;
         }
-        return moved;
+        return progressed;
     }
 
     public double temperature() {

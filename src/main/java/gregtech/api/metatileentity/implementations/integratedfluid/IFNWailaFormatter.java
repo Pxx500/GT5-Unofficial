@@ -36,6 +36,7 @@ public final class IFNWailaFormatter {
             tag.setFloat("pressure", (float) (phases.pressurePa() / 100000));
             tag.setFloat("temperature", (float) phases.temperatureKelvin());
             tag.setDouble("occupiedVolume", network.getOccupiedVolume());
+            network.minimumBulkStrokeLiters().ifPresent(liters -> tag.setInteger("bulkPortionStrokeL", liters));
             if (!network.isPending() && network.getAmbientExchangeTick() != Long.MIN_VALUE) {
                 tag.setDouble("ambientEuPerTick", network.getAmbientHeatMicroEu() / (1_000_000d * NetworkManager.AMBIENT_STEP_TICKS));
             }
@@ -85,6 +86,8 @@ public final class IFNWailaFormatter {
         }
 
         addSubstanceAmount(tag, currenttip);
+        if (tag.hasKey("bulkPortionStrokeL")) currenttip.add(net.minecraft.util.StatCollector.translateToLocalFormatted(
+            "GT5U.vfn.bulk_stroke", formatNumber(tag.getInteger("bulkPortionStrokeL"))));
         addPhase(tag, currenttip);
         if (tag.hasKey("ambientEuPerTick")) {
             currenttip.add(String.format(Locale.ROOT, "Ambient heat: %+.3f EU/t", tag.getDouble("ambientEuPerTick")));

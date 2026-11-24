@@ -45,23 +45,26 @@ class OxygenChamberTest {
 
     @Test
     void evacuatedPortTakesItsFirstSubstanceButCannotMixSubstances() {
-        var oxygen = chamber(765.991, 325100);
+        var oxygen = ClosedFluidChamber.of(PureFluid.oxygen(), BigDecimal.TEN, 7659.91, BigDecimal.valueOf(3251000));
         var empty = ClosedFluidChamber.empty(PureFluid.water(), 5000);
-        var move = oxygen.meteredTransferTo(empty, BigDecimal.valueOf(100), Double.MAX_VALUE);
-        assertTrue(move.transferredMassKg().signum() > 0);
+        assertEquals(0, oxygen.meteredTransferTo(empty, BigDecimal.valueOf(100), Double.MAX_VALUE).transferredMassKg().signum());
+        var move = oxygen.meteredTransferTo(empty, BigDecimal.valueOf(800), Double.MAX_VALUE);
+        assertEquals(888888L, move.transferredMassKg().movePointRight(6).longValueExact());
         assertEquals(0, oxygen.totalEnergyEu().compareTo(move.source().totalEnergyEu().add(move.receiver().totalEnergyEu())));
         var steam = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 1000, BigDecimal.valueOf(2242506));
         assertTrue(steam.pressurePa() > move.receiver().pressurePa());
         var refused = steam.meteredTransferTo(move.receiver(), BigDecimal.TEN, Double.MAX_VALUE);
         assertSame(steam, refused.source());
         assertSame(move.receiver(), refused.receiver());
-        var split = oxygen.splitChargeTo(empty, ClosedFluidChamber.empty(PureFluid.water(), 5000), 100, 0.25);
+        var split = oxygen.splitChargeTo(empty, ClosedFluidChamber.empty(PureFluid.water(), 5000), 3000, 0.25);
         assertTrue(split.first().massKg().signum() > 0);
         assertEquals(0, oxygen.massKg().compareTo(split.source().massKg().add(split.first().massKg()).add(split.second().massKg())));
     }
 
     @Test
-    void denseRoomTemperatureGasIsRejectedOutsideTheProfile() {
-        assertThrows(PureFluid.UnsupportedStateException.class, () -> chamber(20, 325100));
+    void compressedRoomTemperatureOxygenStopsAtTheModelPressureLimit() {
+        var compressed = chamber(20, 325100);
+        assertTrue(compressed.pressurePa() > 2e6 && compressed.pressurePa() < 8e6);
+        assertThrows(PureFluid.UnsupportedStateException.class, () -> chamber(5, 325100));
     }
 }

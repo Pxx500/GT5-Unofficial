@@ -21,6 +21,42 @@ class ClosedFluidChamberTransferTest {
     }
 
     @Test
+    void coldHeliumWaitsUntilAWholePassiveDischargeFitsTheReceiver() {
+        var helium = PureFluid.forSubstance("helium").get();
+        // A two-phase working charge measured on the dedicated server at 2.4 K
+        var cold = ClosedFluidChamber.of(helium, new BigDecimal("1.333332"), 1000, new BigDecimal("10962.020356"));
+        var receiver = ClosedFluidChamber.empty(helium, 200);
+        var stroke = BigDecimal.valueOf(1000);
+        assertTrue(cold.pressurePa() > receiver.pressurePa() && cold.state().liquidMassFraction() > 0);
+        var refused = cold.meteredTransferTo(receiver, stroke, Double.MAX_VALUE);
+        assertTrue(refused.source() == cold && refused.receiver() == receiver);
+
+        var warmer = cold.exchangeWithAmbient(2.5, 1e8, 2.5);
+        assertTrue(warmer.totalEnergyEu().compareTo(cold.totalEnergyEu()) > 0);
+        var moved = warmer.meteredTransferTo(receiver, stroke, Double.MAX_VALUE);
+        assertEquals(111111L, moved.transferredMassKg().movePointRight(6).longValueExact());
+        assertEquals(0, warmer.massKg().compareTo(moved.source().massKg().add(moved.receiver().massKg())));
+        assertEquals(0, warmer.totalEnergyEu().compareTo(moved.source().totalEnergyEu().add(moved.receiver().totalEnergyEu())));
+        assertTrue(moved.source().pressurePa() >= moved.receiver().pressurePa());
+    }
+
+    @Test
+    void pumpGasIntakeWithdrawsSteamRatherThanTheBulkMixture() {
+        var drum = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
+        var outlet = ClosedFluidChamber.empty(PureFluid.water(), 2000);
+        var stroke = BigDecimal.valueOf(20);
+        var move = drum.pumpTo(outlet, stroke, 300000, 200000, 2560, 0, true);
+        assertEquals(6250L, move.transferredMassKg().movePointRight(6).longValueExact());
+        var removed = drum.totalEnergyEu().subtract(move.source().totalEnergyEu());
+        double specificEnthalpy = removed.doubleValue() / move.transferredMassKg().doubleValue();
+        assertTrue(specificEnthalpy > 2.24e6 && specificEnthalpy < 2.27e6, "Saturated vapor, not the mixture average");
+        assertTrue(move.shaftWorkEu() < 0);
+        assertEquals(0, removed.subtract(BigDecimal.valueOf(move.shaftWorkEu())).compareTo(move.receiver().totalEnergyEu()));
+        assertEquals(0, drum.pumpLiquidTo(outlet, stroke, 300000, 200000, 2560).transferredMassKg().signum(),
+            "The same drum lacks one whole liquid portion");
+    }
+
+    @Test
     void denseFeedCannotSpendPowerToPumpAFractionOfOneKg() {
         var low = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("21.301564"), 100, new BigDecimal("37551663.742696"));
         var high = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("12.894426"), 100, new BigDecimal("35530474.686141"));
@@ -30,15 +66,41 @@ class ClosedFluidChamberTransferTest {
     }
 
     @Test
+    void denseReturnNeedsAWholePaidStrokeWithinTheFinalPressureHead() {
+        // Two 200 L vessels at 221 and 331.5 bar
+        var suction = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("42.603128"), 200, new BigDecimal("75103327.485392"));
+        var discharge = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("25.788852"), 200, new BigDecimal("71060949.372282"));
+        var liters = BigDecimal.valueOf(5);
+        long evPeriod = 2048L * 20;
+        var refused = suction.pumpLiquidTo(discharge, liters, 35e6, 12e6, evPeriod);
+        assertTrue(refused.source() == suction && refused.receiver() == discharge);
+        assertEquals(0, refused.shaftWorkEu());
+
+        var stroke = suction.pumpLiquidTo(discharge, liters, 35e6, 12e6, 3 * evPeriod);
+        assertEquals(0, BigDecimal.ONE.compareTo(suction.massKg().subtract(stroke.source().massKg())));
+        assertEquals(0, BigDecimal.ONE.compareTo(stroke.receiver().massKg().subtract(discharge.massKg())));
+        long paid = -stroke.shaftWorkEu();
+        assertTrue(paid > evPeriod && paid <= 3 * evPeriod);
+        double head = stroke.receiver().pressurePa() - stroke.source().pressurePa();
+        assertTrue(head > 11e6 && head <= 12e6);
+        assertEquals(0, suction.totalEnergyEu().add(discharge.totalEnergyEu()).add(BigDecimal.valueOf(paid))
+            .compareTo(stroke.source().totalEnergyEu().add(stroke.receiver().totalEnergyEu())));
+    }
+
+    @Test
     void pressureAtEitherSplitInletStopsBothBranchesWithoutLosingTheRemainder() {
         var drum = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 861.565125, new BigDecimal("1042343.4875"));
         var large = ClosedFluidChamber.empty(PureFluid.water(), 1000);
-        var small = ClosedFluidChamber.empty(PureFluid.water(), 12);
+        var small = ClosedFluidChamber.empty(PureFluid.water(), 100);
         var move = drum.splitChargeTo(large, small, 800, 0.25);
         var drawn = drum.massKg().subtract(move.source().massKg());
-        assertTrue(drawn.signum() > 0 && drawn.compareTo(new BigDecimal("0.1")) < 0);
+        assertTrue(drawn.signum() > 0 && drawn.compareTo(new BigDecimal("0.3")) < 0);
         assertEquals(0, drawn.compareTo(move.first().massKg().add(move.second().massKg())));
-        assertEquals(0, drawn.multiply(new BigDecimal("0.25")).setScale(6, java.math.RoundingMode.DOWN).compareTo(move.first().massKg()));
+        // At equal liquid and vapor mass, one GT-equivalent portion is 1 / 80.5 kg
+        long portion = 12423;
+        long drawnMicroKg = drawn.movePointRight(6).longValueExact();
+        assertEquals(0, drawnMicroKg % portion);
+        assertEquals(drawnMicroKg / portion / 4 * portion, move.first().massKg().movePointRight(6).longValueExact());
         assertEquals(0, drum.totalEnergyEu().compareTo(move.source().totalEnergyEu()
             .add(move.first().totalEnergyEu()).add(move.second().totalEnergyEu())));
         assertTrue(move.source().pressurePa() >= Math.max(move.first().pressurePa(), move.second().pressurePa()));
@@ -53,9 +115,8 @@ class ClosedFluidChamberTransferTest {
         var empty = ClosedFluidChamber.empty(PureFluid.water(), 2000);
         assertEquals(0.5, drum.state().vaporMassFraction(), 1e-8);
         var move = drum.meteredVaporTo(empty, BigDecimal.valueOf(20));
-        // At 373.15 K and 1 bar, 20 L of saturated vapor contains 11613 microkg, not 20 L of bulk mixture
-        long expected = (long) (20 * 100000 / (1000 * 461.5 * 373.15) * 1_000_000);
-        assertEquals(expected, move.transferredMassKg().movePointRight(6).longValueExact());
+        // At 373.15 K and 1 bar, 20 L of saturated vapor fits one 6.25 g steam portion
+        assertEquals(6250L, move.transferredMassKg().movePointRight(6).longValueExact());
         double enthalpy = move.transportedEnergyEu().doubleValue() / move.transferredMassKg().doubleValue();
         assertTrue(enthalpy > 2.24e6 && enthalpy < 2.27e6, "Vapor, not bulk enthalpy");
         assertEquals(1, move.receiver().state().vaporMassFraction());
@@ -104,8 +165,10 @@ class ClosedFluidChamberTransferTest {
             assertEquals(0, stopped.shaftWorkEu());
             assertEquals(0, stopped.transferredMassKg().signum());
         }
-        var move = steam.expandTo(empty, port, stage, 96);
-        assertTrue(move.shaftWorkEu() > 0 && move.shaftWorkEu() <= 96);
+        assertEquals(0, steam.expandTo(empty, port, stage, 96).transferredMassKg().signum());
+        var move = steam.expandTo(empty, port, stage, 2560);
+        assertEquals(6250L, move.transferredMassKg().movePointRight(6).longValueExact());
+        assertTrue(move.shaftWorkEu() > 96 && move.shaftWorkEu() <= 2560);
         assertEquals(0, BigDecimal.ONE.compareTo(move.source().massKg().add(move.receiver().massKg())));
         assertEquals(0, steam.totalEnergyEu().compareTo(move.source().totalEnergyEu()
             .add(move.receiver().totalEnergyEu()).add(BigDecimal.valueOf(move.shaftWorkEu()))));

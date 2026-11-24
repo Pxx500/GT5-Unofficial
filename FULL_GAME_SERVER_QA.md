@@ -16,7 +16,7 @@ The dedicated CI runtime does not tick secondary dimensions. Run `gregtech:Injec
 
 `gregtech:InjectorViewTests.compareSteamLoopsAcrossDimensions` runs identical steam loops in both worlds. It seeds matching chamber inventories so the Forge intake temperature does not bias the comparison. The sealed exhaust retains 5 g in each world for 1000 ticks. The test then meters both plants for 2400 powered ticks. Its diagnostics separate heaters, condensate pump, shaft output, delivered MV packets and environmental heat. This compares finite runs in two whole-plant environments, not steady-state efficiency or the effect of changing only a condenser.
 
-The closed-loop case `gregtech:VaporOutletTests.pumpedCondensateReturnsToTheBoiler` starts with one kilogram of GT water. It meters the powered boiler, inlet reheater, turbine, load and return pump. It isolates a return stroke to measure mass and work against backpressure, then resumes generation and checks repeated returns without adding water. The test meters environmental heat separately. `gregtech:InjectorViewTests.configureCondensateReturn` opens the installed pump and submits its flow limit from the client.
+The closed-loop case `gregtech:VaporOutletTests.pumpedCondensateReturnsToTheBoiler` starts with one kilogram of GT water. It meters the powered boiler, inlet reheater, turbine, load and return pump. It isolates a return stroke to measure mass and work against backpressure, then resumes generation and checks repeated returns without adding water. The test meters environmental heat separately. `gregtech:InjectorViewTests.configureCondensateReturn` opens the installed pump and sets its intake volume per stroke from the client.
 
 ## Restart a working machine
 
@@ -41,7 +41,7 @@ Use the fixtures in `src/vfnQa/java/gttests/vfn/` and the templates in `src/vfnQ
 
 The `MaintenanceTests` holder replaces the automatic maintenance hatch with a manual one. Both controllers shut down with an unfinished batch when all six maintenance flags fail. The tests repair through the hatch with duct tape and restart the controller with its inlet still isolated. The heat pump must not repeat paid work. The radiator must finish the charge already in its loop.
 
-The turbine cases compare otherwise identical dry exhaust pipes after a 430 K and a 495 K inlet charge. They distinguish damage due to wet expansion from the phase measured in the receiving pipe. Separate cases check the last powered stroke before rotor breakage, passive flow without a usable rotor, and a full dynamo that holds the charge without damaging the rotor.
+The turbine cases compare otherwise identical dry exhaust pipes after a 430 K and a 495 K inlet charge. They distinguish damage due to wet expansion from the phase measured in the receiving pipe. Separate cases check the last powered stroke before rotor breakage, passive flow with an empty rotor slot, and a full dynamo that holds the charge without damaging the rotor.
 
 `PressureLineTests` checks the registered assembler recipe and two three-pipe lines primed with identical supercritical water. The reinforced line retains the charge and accounts for the boiler's paid heat and ambient exchange. In the mixed line the ordinary middle pipe ruptures and both reinforced ends survive. The primed inventory tests containment, not startup or net power.
 

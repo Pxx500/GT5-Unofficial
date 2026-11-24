@@ -31,15 +31,16 @@ class MTEIntegratedFluidPressureRegulatorTest {
 
     @Test
     void transferBetweenNetworksUsesConfiguredLimits() {
-        var input = vapor(2000);
-        var output = vapor(1000);
+        var input = vapor(125000);
+        var output = vapor(25000);
         var regulator = newRegulator();
         regulator.setSetpointPressureBar(1);
         regulator.setMaxPacketAmountL(1);
-        // At inlet density, one liter of vapor is 20 microkg
-        assertEquals(20, regulator.transferBetweenNetworks(input, output));
-        assertEquals(1980, input.getAmountQ());
-        assertEquals(1020, output.getAmountQ());
+        assertEquals(0, regulator.transferBetweenNetworks(input, output));
+        regulator.setMaxPacketAmountL(5);
+        assertEquals(6250, regulator.transferBetweenNetworks(input, output));
+        assertEquals(118750, input.getAmountQ());
+        assertEquals(31250, output.getAmountQ());
         assertEquals(0, regulator.transferBetweenNetworks(output, input));
         regulator.setSetpointPressureBar(output.getPressure());
         assertEquals(0, regulator.transferBetweenNetworks(input, output));
@@ -71,26 +72,26 @@ class MTEIntegratedFluidPressureRegulatorTest {
 
     @Test
     void largePacketCannotCrossEquilibriumOrSpendFrozenInventory() {
-        var input = vapor(2000);
-        var output = vapor(1000);
+        var input = vapor(125000);
+        var output = vapor(25000);
         var regulator = newRegulator();
         var total = input.getCanonicalState().totalEnergy().rawUnits() + output.getCanonicalState().totalEnergy().rawUnits();
-        regulator.setSetpointPressureBar(1);
+        regulator.setSetpointPressureBar(5);
         regulator.setMaxPacketAmountL(100);
         assertTrue(regulator.transferBetweenNetworks(input, output) > 0);
         assertTrue(input.getPressure() >= output.getPressure());
-        assertTrue(input.getPressure() - output.getPressure() < 0.0001f);
-        assertEquals(3000, input.getAmountQ() + output.getAmountQ());
+        assertEquals(0, regulator.transferBetweenNetworks(input, output), "A further whole portion would reverse the head");
+        assertEquals(150000, input.getAmountQ() + output.getAmountQ());
         assertEquals(total, input.getCanonicalState().totalEnergy().rawUnits() + output.getCanonicalState().totalEnergy().rawUnits());
-        var fresh = vapor(2000);
+        var fresh = vapor(125000);
         fresh.freeze("maintenance");
         assertEquals(0, regulator.transferBetweenNetworks(fresh, output));
-        assertEquals(2000, fresh.getAmountQ());
+        assertEquals(125000, fresh.getAmountQ());
     }
 
     private static IntegratedFluidNetwork vapor(long microKg) {
         var network = IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), 100, 0, 10);
-        network.replaceCanonicalState(IFNCanonicalState.fromRaw("water", microKg, microKg * 2_064_428L + microKg / 2));
+        network.replaceCanonicalState(IFNCanonicalState.fromRaw("water", microKg, microKg * 2_242_506L));
         return network;
     }
 }

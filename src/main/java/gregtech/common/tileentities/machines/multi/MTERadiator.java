@@ -214,8 +214,8 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
                 return SimpleCheckRecipeResult.ofFailure("vfn_radiator_head");
             }
             var after = outputNetwork.drainMachineChamber(loop, LOOP_VOLUME_L, pressureDropPa);
-            if (after == loop) return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
-            loop = after;
+            if (!after.finished()) return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+            loop = after.remaining();
             outputReady = false;
             getBaseMetaTileEntity().markDirty();
         }
@@ -234,7 +234,8 @@ public class MTERadiator extends MTEEnhancedMultiBlockBase<MTERadiator> implemen
                 if (inputNetwork.getAmountQ() == 0 || inputTemperatureBeforeFill == ambient) return CheckRecipeResultRegistry.NO_RECIPE;
             } else {
                 var filled = inputNetwork.fillMachineChamber(loop, LOOP_VOLUME_L);
-                if (filled == loop) return CheckRecipeResultRegistry.NO_RECIPE;
+                if (filled == loop) return inputNetwork.intakeStrokeTooSmall(LOOP_VOLUME_L, 1)
+                    ? SimpleCheckRecipeResult.ofFailure("vfn_inlet_portion") : CheckRecipeResultRegistry.NO_RECIPE;
                 loop = filled;
             }
             remainingTicks = machineMode == MODE_TARGET_TEMPERATURE ? -1 : constantOperationTicks;

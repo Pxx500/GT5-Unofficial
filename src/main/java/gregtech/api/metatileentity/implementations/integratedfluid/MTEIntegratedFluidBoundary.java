@@ -15,19 +15,11 @@ abstract class MTEIntegratedFluidBoundary extends MTEHatch {
     static final int CONTACT_TICKS = 20;
 
     MTEIntegratedFluidBoundary(int id, String name, String regionalName, int tier, String[] description) {
-        this(id, name, regionalName, tier, 0, description);
-    }
-
-    MTEIntegratedFluidBoundary(int id, String name, String regionalName, int tier, int slots, String[] description) {
-        super(id, name, regionalName, tier, slots, description);
+        super(id, name, regionalName, tier, 0, description);
     }
 
     MTEIntegratedFluidBoundary(String name, int tier, String[] description, ITexture[][][] textures) {
-        this(name, tier, 0, description, textures);
-    }
-
-    MTEIntegratedFluidBoundary(String name, int tier, int slots, String[] description, ITexture[][][] textures) {
-        super(name, tier, slots, description, textures);
+        super(name, tier, 0, description, textures);
     }
 
     @Override

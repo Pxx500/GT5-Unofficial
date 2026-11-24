@@ -47,7 +47,15 @@ class HeatPumpOperatingPressureTest {
         long energyBefore = energy(feed) + energy(outlet) + before.getLong("pumpMicroEu");
         long feedBefore = feed.getAmountQ();
         double target = heating ? 499 : 455;
-        assertTrue(pump.fill(new Intake(feed, null, 10, 1, false), target, 0, 0));
+        boolean filled = pump.fill(new Intake(feed, null, 10, 1, false), target, 0, 0);
+        if (steamPortions(bar, kelvin, 10) == 0) {
+            assertFalse(filled, "The inlet volume cannot supply one steam portion");
+            assertEquals(feedBefore, feed.getAmountQ());
+            assertEquals(before, saved(pump));
+            assertEquals(energyBefore, energy(feed) + energy(outlet) + before.getLong("pumpMicroEu"));
+            return;
+        }
+        assertTrue(filled);
         assertTrue(feed.getAmountQ() < feedBefore);
         assertTrue(feed.getPressurePa() + 1e-6 >= workingPa(saved(pump), false));
         assertEquals(energyBefore, energy(feed) + energy(outlet) + saved(pump).getLong("pumpMicroEu"));
@@ -81,14 +89,25 @@ class HeatPumpOperatingPressureTest {
         long feedsEnergy = energy(redFeed) + (independent ? energy(blueFeed) : 0);
         var before = saved(pump);
         long redBefore = before.getLong("pumpMicroKg"), blueBefore = before.getLong("pumpPartnerMicroKg");
-        assertTrue(pump.fill(new Intake(redFeed, blueFeed, 50, independent ? 1 : 0.35, false), 490, 0, 0));
+        long portions = steamPortions(bar, kelvin, 50);
+        boolean filled = pump.fill(new Intake(redFeed, blueFeed, 50, independent ? 1 : 0.35, false), 490, 0, 0);
+        if (independent ? steamPortions(bar * 0.9, kelvin, 50) == 0 : portions * 35 / 100 == 0) {
+            assertFalse(filled, "Both branches must be able to admit a whole portion");
+            assertEquals(feedMass, redFeed.getAmountQ() + (independent ? blueFeed.getAmountQ() : 0));
+            assertEquals(feedsEnergy, energy(redFeed) + (independent ? energy(blueFeed) : 0));
+            assertEquals(before, saved(pump));
+            return;
+        }
+        assertTrue(filled);
         var admitted = saved(pump);
         long redIn = admitted.getLong("pumpMicroKg") - redBefore, blueIn = admitted.getLong("pumpPartnerMicroKg") - blueBefore;
         assertTrue(redIn > 0 && blueIn > 0);
         assertTrue(redFeed.getPressurePa() + 1e-6 >= workingPa(admitted, false));
         assertTrue((independent ? blueFeed : redFeed).getPressurePa() + 1e-6 >= workingPa(admitted, true));
         assertEquals(feedMass, redFeed.getAmountQ() + (independent ? blueFeed.getAmountQ() : 0) + redIn + blueIn);
-        if (!independent) assertEquals(0.35 * (redIn + blueIn), redIn, 1);
+        assertEquals(0, redIn % 6250);
+        assertEquals(0, blueIn % 6250);
+        if (!independent) assertEquals(((redIn + blueIn) / 6250 * 35 / 100) * 6250, redIn);
         assertEquals(feedsEnergy + sumEnergy(before), energy(redFeed) + (independent ? energy(blueFeed) : 0) + sumEnergy(admitted));
         long[] paid = { 0 };
         pump.advance(300, 2_000_000L, eu -> { paid[0] += eu; return true; });
@@ -164,7 +183,7 @@ class HeatPumpOperatingPressureTest {
         assertTrue(smallPacket.fill(new Intake(feed, null, 10, 1, false), 999, 0, 0));
         assertTrue(largePacket.fill(new Intake(otherFeed, null, 100, 1, false), 999, 0, 0));
         assertTrue(smallPacket.temperature() < 999);
-        assertEquals(1000, largePacket.temperature(), 0.001);
+        assertTrue(largePacket.temperature() <= 1000 && largePacket.temperature() > 999);
         assertTrue(saved(largePacket).getLong("pumpMicroKg") > saved(smallPacket).getLong("pumpMicroKg"));
         assertEquals(feed.getAmountQ() + saved(smallPacket).getLong("pumpMicroKg"), otherFeed.getAmountQ() + saved(largePacket).getLong("pumpMicroKg"));
         assertEquals(energy(feed) + saved(smallPacket).getLong("pumpMicroEu"), energy(otherFeed) + saved(largePacket).getLong("pumpMicroEu"));
@@ -186,7 +205,18 @@ class HeatPumpOperatingPressureTest {
         for (int stroke = 0; stroke < 8; stroke++) {
             long energy = energy(feed) + energy(receiver) + saved(pump).getLong("pumpMicroEu");
             long inlet = feed.getAmountQ(), outlet = receiver.getAmountQ();
-            assertTrue(pump.fill(new Intake(feed, null, liters, 1, false), target, 0, 0), "Expected intake at stroke " + stroke);
+            var intake = new Intake(feed, null, liters, 1, false);
+            var before = saved(pump);
+            boolean filled = pump.fill(intake, target, 0, 0);
+            if (inlet * liters / 10000 < 6250) {
+                assertFalse(filled, "Not enough steam in the swept inlet volume");
+                assertFalse(pump.fill(intake, target, 0, 0), "Waiting cannot bank fractional steam");
+                assertEquals(before, saved(pump));
+                assertEquals(inlet, feed.getAmountQ());
+                assertEquals(energy, energy(feed) + energy(receiver) + before.getLong("pumpMicroEu"));
+                break;
+            }
+            assertTrue(filled, "Expected intake at stroke " + stroke);
             assertTrue(feed.getAmountQ() < inlet);
             long admittedEnergy = saved(pump).getLong("pumpMicroEu");
             assertEquals(energy, energy(feed) + energy(receiver) + admittedEnergy);
@@ -201,8 +231,12 @@ class HeatPumpOperatingPressureTest {
             assertTrue(heat == 0 || paid[0] > 0);
             if (!pump.discharge(receiver, null)) {
                 var retained = saved(pump);
-                double head = retained.getLong("pumpMicroKg") * 1e-6 * 461.5 * target;
-                assertTrue(receiver.getTemperature() > 499.99 || receiver.getPressurePa() >= head - 1,
+                double kg = retained.getLong("pumpMicroKg") * 1e-6;
+                double head = kg * 461.5 * target;
+                // An adiabatic 6.25 g draw lowers pressure in the 1000 L working chamber.
+                // The same transported energy raises pressure in the 10000 L dry receiver
+                double nextHead = head * Math.pow(1 - 0.00625 / kg, 2010 / (2010 - 461.5));
+                assertTrue(receiver.getTemperature() > 499.99 || receiver.getPressurePa() + (head - nextHead) / 10 >= nextHead - 1,
                     "Unexplained refusal at stroke " + stroke + ": receiver K=" + receiver.getTemperature()
                         + ", Pa=" + receiver.getPressurePa() + ", working Pa=" + head);
                 assertTrue(pump.ready());
@@ -271,5 +305,9 @@ class HeatPumpOperatingPressureTest {
         long mass = Math.round(1e6 * 100 * bar * liters / (461.5 * kelvin));
         long energy = Math.round(mass * (2_257_000 + 2010 * (kelvin - 373.15) - 461.5 * kelvin));
         return IFNCanonicalState.fromRaw("water", mass, energy);
+    }
+
+    private static long steamPortions(double bar, double kelvin, int liters) {
+        return (long) (100 * bar * liters / (461.5 * kelvin) * 160);
     }
 }

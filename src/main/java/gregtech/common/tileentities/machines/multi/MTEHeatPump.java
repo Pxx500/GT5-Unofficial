@@ -212,14 +212,14 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
                     case RED -> SimpleCheckRecipeResult.ofFailure("vfn_red_outlet_head");
                     case BLUE -> SimpleCheckRecipeResult.ofFailure("vfn_blue_outlet_head");
                     case BOTH -> SimpleCheckRecipeResult.ofFailure("vfn_both_outlet_heads");
-                    case NONE -> CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+                    case NONE -> SimpleCheckRecipeResult.ofFailure("vfn_chamber_outlet");
                 };
             }
         }
         if (!machineProcessState.active()) {
             if (layout != activeLayout() || blue != bluePrimary()) return CheckRecipeResultRegistry.NO_RECIPE;
             if (!IFNNetworkTransferGate.isOperational(outlet) || (paired && !IFNNetworkTransferGate.isOperational(otherOutlet)))
-                return CheckRecipeResultRegistry.ITEM_OUTPUT_FULL;
+                return SimpleCheckRecipeResult.ofFailure("vfn_disconnected_outlet");
             if (!IFNNetworkTransferGate.isOperational(inlet) || (hx && !IFNNetworkTransferGate.isOperational(otherInlet)))
                 return CheckRecipeResultRegistry.NO_RECIPE;
             var intake = new Intake(inlet, otherInlet, fluidAmountPerOperation, layout == Layout.SPLIT ? splitRatio : 1, blue);
@@ -241,8 +241,14 @@ public class MTEHeatPump extends MTEEnhancedMultiBlockBase<MTEHeatPump> implemen
                     directional && !heating ? Double.POSITIVE_INFINITY : lowerTemperatureTolerance,
                     directional && heating ? Double.POSITIVE_INFINITY : upperTemperatureTolerance);
             }
-            if (!admitted) return machineProcessState.inletPressureTooLow(intake)
-                ? SimpleCheckRecipeResult.ofFailure("vfn_inlet_head") : CheckRecipeResultRegistry.NO_RECIPE;
+            if (!admitted) {
+                if (machineProcessState.inletPressureTooLow(intake)) return SimpleCheckRecipeResult.ofFailure("vfn_inlet_head");
+                if (inlet.intakeStrokeTooSmall(intake.liters(), intake.primaryShare())
+                    || hx && otherInlet.intakeStrokeTooSmall(intake.liters(), 1)) return SimpleCheckRecipeResult.ofFailure("vfn_inlet_portion");
+                if (inlet.getAmountQ() > 0 && (!hx || otherInlet.getAmountQ() > 0))
+                    return SimpleCheckRecipeResult.ofFailure("vfn_chamber_intake");
+                return CheckRecipeResultRegistry.NO_RECIPE;
+            }
         }
         getBaseMetaTileEntity().markDirty();
         mMaxProgresstime = 20;

@@ -49,7 +49,8 @@ class IFNConservationTest {
             expectedEnergy += contact(source, 490) + contact(receiver, 450);
             long sourceBefore = source.getAmountQ(), receivedBefore = receiver.getAmountQ();
             long moved = source.meterTo(receiver, packetLiters * 1_000_000L, Double.MAX_VALUE);
-            assertTrue(moved > 0 && source.getPressurePa() >= receiver.getPressurePa());
+            if (sourceBefore * packetLiters / 10_000 < 6250) assertEquals(0, moved);
+            else assertTrue(moved > 0 && source.getPressurePa() >= receiver.getPressurePa());
             assertEquals(sourceBefore - moved, source.getAmountQ());
             assertEquals(receivedBefore + moved, receiver.getAmountQ());
             assertEquals(mass, a.getAmountQ() + b.getAmountQ());
@@ -77,7 +78,7 @@ class IFNConservationTest {
         long initial = source.getAmountQ(), previous = receiver.getAmountQ();
         long totalEnergy = energy(source) + energy(receiver);
         long moved = source.meterTo(receiver, 10_000_000L, Double.MAX_VALUE);
-        assertEquals(initial / 100, moved);
+        assertEquals(6250L, moved);
         assertTrue(moved > 0 && moved < 1_000_000);
         assertEquals(initial - moved, source.getAmountQ());
         assertEquals(previous + moved, receiver.getAmountQ());
@@ -126,14 +127,14 @@ class IFNConservationTest {
         long coldEnergy = energy(input);
         assertTrue(coldEnergy < 0);
         for (int i = 0; i < 16; i++) {
-            assertEquals(0, input.meterTo(output, 10_000_000, Double.MAX_VALUE));
+            assertEquals(0, input.meterTo(output, 20_000_000, Double.MAX_VALUE));
             assertEquals(9_000_000L, input.getAmountQ());
             assertEquals(coldEnergy, energy(input));
             assertEquals(0, output.getAmountQ());
             assertEquals(0, energy(output));
         }
         output.clearFrozen();
-        assertTrue(input.meterTo(output, 10_000_000, Double.MAX_VALUE) > 0);
+        assertTrue(input.meterTo(output, 20_000_000, Double.MAX_VALUE) > 0);
         assertEquals(9_000_000L, input.getAmountQ() + output.getAmountQ());
         assertEquals(coldEnergy, energy(input) + energy(output));
     }

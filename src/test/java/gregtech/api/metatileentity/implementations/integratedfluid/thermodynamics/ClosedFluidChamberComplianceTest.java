@@ -17,21 +17,25 @@ class ClosedFluidChamberComplianceTest {
         var sink = empty.admitReferenceStream(PureFluid.water(), 300, false, BigDecimal.ONE, 100, 0).chamber();
         var slow = source.pumpLiquidTo(sink, BigDecimal.valueOf(20), 310000, 300000, 20 * 128);
         var fast = source.pumpLiquidTo(sink, BigDecimal.valueOf(40), 310000, 300000, 20 * 128);
-        assertEquals(20, slow.transferredMassKg().doubleValue() * 1.043, 0.01);
-        assertEquals(40, fast.transferredMassKg().doubleValue() * 1.043, 0.01);
+        assertEquals(19, slow.transferredMassKg().intValueExact());
+        assertEquals(38, fast.transferredMassKg().intValueExact());
         assertTrue(-fast.shaftWorkEu() > -slow.shaftWorkEu());
     }
 
     @Test
     void paidStrokeReturnsCondensateAgainstBoilerPressure() {
         var inlet = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.TEN, 100, BigDecimal.valueOf(-3000000));
-        var boiler = liquid(new ChamberVolume(1.043, 0.00001, 100000, 2), 150000, 350);
+        var boiler = liquid(new ChamberVolume(20.86, 0.0002, 100000, 40), 150000, 350);
         assertTrue(inlet.state().vaporMassFraction() > 0 && inlet.pressurePa() < boiler.pressurePa());
         assertEquals(0, inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 0).transferredMassKg().signum());
-        var stroke = inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 100);
+        var underfunded = inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 100);
+        assertEquals(0, underfunded.transferredMassKg().signum());
+        assertEquals(0, underfunded.shaftWorkEu());
+        var stroke = inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 250);
         var mass = stroke.transferredMassKg();
         long paid = -stroke.shaftWorkEu();
-        assertEquals(100L, paid);
+        assertEquals(1, mass.intValueExact());
+        assertTrue(paid > 100 && paid <= 250);
         double hydraulicEu = mass.doubleValue() * 1.043 * 0.001 * (stroke.receiver().pressurePa() - stroke.source().pressurePa());
         assertTrue(hydraulicEu > 75 && hydraulicEu < paid, "The budget pays the actual lift and losses");
         assertEquals(0, inlet.massKg().subtract(stroke.source().massKg()).compareTo(mass));
@@ -42,7 +46,9 @@ class ClosedFluidChamberComplianceTest {
         assertEquals(0, inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 140000, 220000, 10000).transferredMassKg().signum());
         assertEquals(0, inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 100000, 10000).transferredMassKg().signum());
         var limited = inlet.pumpLiquidTo(boiler, BigDecimal.TEN, 160000, 220000, 10000);
-        assertEquals(160000, limited.receiver().pressurePa(), 1);
+        assertEquals(1, limited.transferredMassKg().intValueExact());
+        assertEquals(0, limited.source().pumpLiquidTo(limited.receiver(), BigDecimal.TEN, 160000, 220000, 10000)
+            .transferredMassKg().signum(), "One more portion would cross the pressure ceiling");
         assertTrue(limited.receiver().pressurePa() <= 160000, "Final stroke respects the outlet setting");
         var vapor = ClosedFluidChamber.of(PureFluid.water(), BigDecimal.ONE, 2000, BigDecimal.valueOf(2203793));
         assertEquals(0, vapor.pumpLiquidTo(boiler, BigDecimal.TEN, 220000, 220000, 100).transferredMassKg().signum());

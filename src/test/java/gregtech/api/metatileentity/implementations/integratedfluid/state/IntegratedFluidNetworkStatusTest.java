@@ -1,8 +1,11 @@
 package gregtech.api.metatileentity.implementations.integratedfluid.state;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.math.BigDecimal;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -14,6 +17,21 @@ import gregtech.api.metatileentity.implementations.integratedfluid.IFNTestSuppor
 import gregtech.api.metatileentity.implementations.integratedfluid.IntegratedFluidNetwork;
 
 class IntegratedFluidNetworkStatusTest {
+
+    @Test
+    void subPortionHeelCannotFinishThroughPressureLossOrAClosedOutlet() {
+        var outlet = IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), 1000, 0, 20);
+        var charge = ClosedFluidChamber.of(PureFluid.water(), new BigDecimal("0.005"), 1000, new BigDecimal("11018.9675"));
+        assertFalse(outlet.drainMachineChamber(charge, 1000, 2000).finished());
+        outlet.freeze("Port isolated");
+        assertFalse(outlet.drainMachineChamber(charge, 1000, 0).finished());
+        outlet.clearFrozen();
+        var stroke = outlet.drainMachineChamber(charge, 1000, 0);
+        assertTrue(stroke.finished());
+        assertSame(charge, stroke.remaining());
+        assertEquals(0L, outlet.getAmountQ());
+        assertEquals(0L, outlet.getCanonicalState().totalEnergy().rawUnits());
+    }
 
     @Test
     void expectedMissingMembersMakeNetworkPending() {
@@ -55,11 +73,13 @@ class IntegratedFluidNetworkStatusTest {
         else inlet.setPending(false);
         var charge = inlet.fillMachineChamber(empty, 100);
         assertTrue(charge.massKg().signum() > 0);
-        assertSame(charge, outlet.drainMachineChamber(charge, 1000, 0));
+        var refused = outlet.drainMachineChamber(charge, 1000, 0);
+        assertFalse(refused.finished());
+        assertSame(charge, refused.remaining());
         assertEquals(0, outlet.getAmountQ());
         if (frozen) outlet.clearFrozen();
         else outlet.setPending(false);
-        var heel = outlet.drainMachineChamber(charge, 1000, 0);
+        var heel = outlet.drainMachineChamber(charge, 1000, 0).remaining();
         assertTrue(outlet.getAmountQ() > 0);
         assertEquals(wet.substanceAmount().rawUnits(), inlet.getAmountQ() + heel.massKg().movePointRight(6).longValueExact() + outlet.getAmountQ());
         assertEquals(wet.totalEnergy().rawUnits(), inlet.getCanonicalState().totalEnergy().rawUnits()

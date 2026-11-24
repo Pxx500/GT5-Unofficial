@@ -1,6 +1,6 @@
 package gregtech.api.metatileentity.implementations.integratedfluid;
 
-import static gregtech.api.enums.GTValues.V;
+import static gregtech.api.enums.HatchElement.Dynamo;
 import static gregtech.api.enums.Textures.BlockIcons.STEAM_TURBINE_SIDE;
 import static gregtech.api.enums.Textures.BlockIcons.STEAM_TURBINE_SIDE_ACTIVE;
 
@@ -8,7 +8,6 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Locale;
 
-import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
@@ -17,77 +16,94 @@ import net.minecraft.util.StatCollector;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
 
-import com.gtnewhorizons.modularui.api.screen.ModularWindow;
-import com.gtnewhorizons.modularui.api.screen.UIBuildContext;
-import com.gtnewhorizons.modularui.common.widget.SlotWidget;
+import com.gtnewhorizon.structurelib.structure.IStructureDefinition;
+
+import gregtech.api.GregTechAPI;
 import gregtech.api.enums.Materials;
-import gregtech.api.items.MetaGeneratedTool;
-import gregtech.api.util.TurbineStatCalculator;
-import gregtech.common.tools.ToolTurbine;
 import gregtech.api.interfaces.ITexture;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
+import gregtech.api.items.MetaGeneratedTool;
 import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.ClosedFluidChamber;
+import gregtech.api.recipe.check.CheckRecipeResult;
+import gregtech.api.recipe.check.SimpleCheckRecipeResult;
 import gregtech.api.render.TextureFactory;
+import gregtech.api.util.MultiblockTooltipBuilder;
+import gregtech.api.util.TurbineStatCalculator;
+import gregtech.common.gui.modularui.multiblock.MTEVFNSteamTurbineGui;
+import gregtech.common.tools.ToolTurbine;
 import mcp.mobius.waila.api.IWailaConfigHandler;
 import mcp.mobius.waila.api.IWailaDataAccessor;
 
-public final class MTEIntegratedFluidSteamTurbine extends MTEIntegratedFluidBoundary {
+public final class MTEIntegratedFluidSteamTurbine extends MTEVFNFlowMachine<MTEIntegratedFluidSteamTurbine> {
 
-    private static final BigDecimal BYPASS_LITERS = BigDecimal.valueOf(8);
+    private static final IStructureDefinition<MTEIntegratedFluidSteamTurbine> STRUCTURE = steelHousing(MTEIntegratedFluidSteamTurbine.class, Dynamo);
+    private static final int STROKE_TICKS = 20;
     private long shaftEu;
     private Boolean lastWetExpansion;
+    private int opening = 100, minInletCbar;
 
-    public MTEIntegratedFluidSteamTurbine(int id, String name, String regionalName, int tier) {
-        super(id, name, regionalName, tier, 1, new String[] {
-            "Dry steam or dense water in the back, exhaust through the front",
-            "Install a GT turbine rotor to generate power. An empty turbine bypasses steam",
-            "Supplies MV power through the four remaining sides" });
-    }
+    public MTEIntegratedFluidSteamTurbine(int id, String name, String regionalName) { super(id, name, regionalName); }
+    private MTEIntegratedFluidSteamTurbine(String name) { super(name); }
 
-    private MTEIntegratedFluidSteamTurbine(String name, int tier, String[] description, ITexture[][][] textures) {
-        super(name, tier, 1, description, textures);
-    }
+    @Override public IMetaTileEntity newMetaEntity(IGregTechTileEntity tile) { return new MTEIntegratedFluidSteamTurbine(mName); }
+    @Override protected boolean hasPowerHatch() { return mDynamoHatches.size() == 1; }
+    @Override public IStructureDefinition<MTEIntegratedFluidSteamTurbine> getStructureDefinition() { return STRUCTURE; }
 
-    @Override
-    public IMetaTileEntity newMetaEntity(IGregTechTileEntity tile) {
-        return new MTEIntegratedFluidSteamTurbine(mName, mTier, mDescriptionArray, mTextures);
-    }
-
-    @Override
-    void onContact(IntegratedFluidNetwork back, IntegratedFluidNetwork front) {
-        var tile = getBaseMetaTileEntity();
+    @Override public CheckRecipeResult checkProcessing() {
         shaftEu = 0;
-        if (back != null && front != null && tile.isAllowedToWork()) {
-            var rotor = mInventory[0];
-            if (!usableRotor(rotor)) back.bypassSteamTo(front, BYPASS_LITERS);
-            else runRotor(back, front, rotor);
+        var back = input != null && input.isValid() ? input.getNetwork() : null;
+        var front = output != null && output.isValid() ? output.getNetwork() : null;
+        if (back == front || !IFNNetworkTransferGate.isOperational(back) || !IFNNetworkTransferGate.isOperational(front))
+            return idle("networks");
+        if (!hasPowerHatch() || !mDynamoHatches.get(0).isValid()) return idle("no_dynamo");
+        if (opening == 0) return idle("closed");
+        if (back.getAmountQ() == 0) return idle("empty");
+        if (!back.containsWater()) return idle("wrong_fluid");
+        if (back.getPressurePa() < minInletCbar * 1000.0) return idle("inlet_floor");
+        if (back.getPressurePa() <= front.getPressurePa()) return idle("backpressure");
+        var rotor = getControllerSlot();
+        final String operation;
+        if (rotor == null) {
+            if (back.bypassSteamTo(front, intake(8)) == 0) return idle("bypass_wait");
+            operation = "bypass";
+        } else {
+            if (!usableRotor(rotor)) return idle("invalid");
+            if (!back.hasExpandableWater()) return idle("wrong_phase");
+            var dynamo = mDynamoHatches.get(0);
+            var store = dynamo.getBaseMetaTileEntity();
+            if (store.getStoredEU() >= store.getEUCapacity()) return idle("dynamo_full");
+            var tool = (MetaGeneratedTool) rotor.getItem();
+            var rating = RotorRating.of(tool, rotor);
+            double inletK = back.getTemperature(), inletPa = back.getPressurePa();
+            if (!(rating.liters > 0 && rating.efficiency > 0)) return idle("invalid_rating");
+            var stroke = intake(rating.liters);
+            var move = back.expandTo(front, stroke, new ClosedFluidChamber.ExpansionStage(8, rating.efficiency),
+                store, dynamo.maxEUOutput() * dynamo.maxAmperesOut() * STROKE_TICKS);
+            if (move == null) return idle(back.intakeStrokeTooSmall(stroke.doubleValue(), 1) ? "small_intake" : "no_stroke");
+            shaftEu = move.shaftWorkEu();
+            lastWetExpansion = move.wetStageExit();
+            tool.doDamage(rotor, rating.wear(inletK, inletPa, move.wetStageExit()));
+            if (rotor.stackSize <= 0) mInventory[getControllerSlotIndex()] = null;
+            store.markDirty();
+            operation = "running";
         }
-        tile.setActive(shaftEu > 0);
+        getBaseMetaTileEntity().markDirty();
+        mEUt = 0;
+        mEfficiency = 10000;
+        mMaxProgresstime = STROKE_TICKS;
+        return SimpleCheckRecipeResult.ofSuccess("vfn_turbine_" + operation);
+    }
+
+    private BigDecimal intake(double liters) { return BigDecimal.valueOf(liters * opening / 100.0); }
+    private CheckRecipeResult idle(String reason) {
+        return SimpleCheckRecipeResult.ofFailure("vfn_turbine_" + reason);
     }
 
     private static boolean usableRotor(ItemStack stack) {
         return stack != null && stack.stackSize == 1 && stack.getItemDamage() % 2 == 0
             && stack.getItem() instanceof MetaGeneratedTool tool && tool.getToolStats(stack) instanceof ToolTurbine
             && MetaGeneratedTool.getToolDamage(stack) < MetaGeneratedTool.getToolMaxDamage(stack);
-    }
-
-    private void runRotor(IntegratedFluidNetwork back, IntegratedFluidNetwork front, ItemStack stack) {
-        long stored = getEUVar();
-        long budget = Math.min(maxEUStore() - stored, maxEUOutput() * CONTACT_TICKS);
-        if (budget <= 0) return;
-        var tool = (MetaGeneratedTool) stack.getItem();
-        var rating = RotorRating.of(tool, stack);
-        if (!(rating.liters > 0 && rating.efficiency > 0)) return;
-        double inletK = back.getTemperature(), inletPa = back.getPressurePa();
-        var move = back.expandTo(front, BigDecimal.valueOf(rating.liters), new ClosedFluidChamber.ExpansionStage(8, rating.efficiency), budget);
-        if (move == null) return;
-        shaftEu = move.shaftWorkEu();
-        lastWetExpansion = move.wetStageExit();
-        setEUVar(stored + shaftEu);
-        tool.doDamage(stack, rating.wear(inletK, inletPa, move.wetStageExit()));
-        if (stack.stackSize <= 0) mInventory[0] = null;
-        getBaseMetaTileEntity().markDirty();
     }
 
     private record RotorRating(double liters, double efficiency, int temperatureK, int pressureBar) {
@@ -106,71 +122,55 @@ public final class MTEIntegratedFluidSteamTurbine extends MTEIntegratedFluidBoun
         }
     }
 
-    @Override
-    public boolean isValidSlot(int index) { return index == 0; }
-
-    @Override
-    public boolean onRightclick(IGregTechTileEntity tile, EntityPlayer player) {
-        openGui(player);
-        return true;
+    public int admissionPercent() { return opening; }
+    public void setAdmissionPercent(int value) { opening = Math.max(0, Math.min(100, value)); getBaseMetaTileEntity().markDirty(); }
+    public int minimumInletCbar() { return minInletCbar; }
+    public void setMinimumInletCbar(int value) { minInletCbar = Math.max(0, Math.min(35000, value)); getBaseMetaTileEntity().markDirty(); }
+    public long lastStrokeEu() { return shaftEu; }
+    public long dynamoRoomEu() {
+        if (!hasPowerHatch() || !mDynamoHatches.get(0).isValid()) return 0;
+        var tile = mDynamoHatches.get(0).getBaseMetaTileEntity();
+        return tile.getEUCapacity() - tile.getStoredEU();
     }
 
-    @Override
-    public void addUIWidgets(ModularWindow.Builder builder, UIBuildContext context) {
-        builder.widget(new SlotWidget(inventoryHandler, 0).setFilter(MTEIntegratedFluidSteamTurbine::usableRotor)
-            .setBackground(getGUITextureSet().getItemSlot()).setPos(79, 31));
+    @Override public void saveNBTData(NBTTagCompound tag) {
+        super.saveNBTData(tag);
+        tag.setInteger("admissionPct", opening);
+        tag.setInteger("minInletCbar", minInletCbar);
     }
-
-    @Override
-    public boolean isEnetOutput() {
-        return true;
+    @Override public void loadNBTData(NBTTagCompound tag) {
+        super.loadNBTData(tag);
+        if (tag.hasKey("admissionPct")) opening = Math.max(0, Math.min(100, tag.getInteger("admissionPct")));
+        minInletCbar = Math.max(0, Math.min(35000, tag.getInteger("minInletCbar")));
     }
-
-    @Override
-    public boolean isOutputFacing(ForgeDirection side) {
-        return side != ForgeDirection.UNKNOWN && !acceptsNetworkOn(side, getBaseMetaTileEntity().getFrontFacing());
+    @Override protected boolean useMui2() { return true; }
+    @Override protected MTEVFNSteamTurbineGui getGui() { return new MTEVFNSteamTurbineGui(this); }
+    @Override protected MultiblockTooltipBuilder createTooltip() {
+        return new MultiblockTooltipBuilder().addMachineType("Steam Turbine")
+            .addInfo("Expands dry steam or dense water through a GT rotor")
+            .addInfo("The dynamo receives the work. Without a rotor, steam bypasses the shaft")
+            .beginStructureBlock(3, 3, 3, true).addController("Front center")
+            .addCasingInfoExactly("Solid Steel Machine Casing", 22, false)
+            .addInputHatch("One VFN input hatch", 1).addOutputHatch("One VFN exhaust hatch", 1)
+            .addDynamoHatch("One dynamo hatch", 1).addMaintenanceHatch("One maintenance hatch", 1).toolTipFinisher("GregTech");
     }
-
-    @Override
-    public long maxEUOutput() {
-        return V[mTier];
-    }
-
-    @Override
-    public long getMinimumStoredEU() {
-        return 0;
-    }
-
-    @Override
-    public long maxEUStore() {
-        return 2 * CONTACT_TICKS * maxEUOutput();
-    }
-
-    @Override
-    public ITexture[] getTexture(IGregTechTileEntity tile, ForgeDirection side, ForgeDirection facing, int color,
+    @Override public ITexture[] getTexture(IGregTechTileEntity tile, ForgeDirection side, ForgeDirection facing, int color,
         boolean active, boolean redstone) {
-        return super.getTexture(tile, acceptsNetworkOn(side, facing) ? side : facing, facing, color, active, redstone);
-    }
-
-    @Override
-    public ITexture[] getTexturesActive(ITexture base) {
-        return new ITexture[] { base, TextureFactory.of(STEAM_TURBINE_SIDE_ACTIVE) };
-    }
-
-    @Override
-    public ITexture[] getTexturesInactive(ITexture base) {
-        return new ITexture[] { base, TextureFactory.of(STEAM_TURBINE_SIDE) };
+        var casing = TextureFactory.of(GregTechAPI.sBlockCasings2, 0);
+        return side == facing ? new ITexture[] { casing, TextureFactory.of(active ? STEAM_TURBINE_SIDE_ACTIVE : STEAM_TURBINE_SIDE) }
+            : new ITexture[] { casing };
     }
 
     @Override
     public void getWailaNBTData(EntityPlayerMP player, TileEntity tile, NBTTagCompound tag, World world, int x, int y, int z) {
         super.getWailaNBTData(player, tile, tag, world, x, y, z);
-        tag.setDouble("shaftEuPerTick", shaftEu / (double) CONTACT_TICKS);
+        tag.setDouble("shaftEuPerTick", (mMaxProgresstime > 0 ? shaftEu : 0) / (double) STROKE_TICKS);
         if (lastWetExpansion != null) tag.setBoolean("vfnLastWetExpansion", lastWetExpansion);
-        var stack = mInventory[0];
+        var stack = getControllerSlot();
+        if (stack != null && !usableRotor(stack)) tag.setBoolean("vfnInvalidRotor", true);
         if (usableRotor(stack)) {
             var rating = RotorRating.of((MetaGeneratedTool) stack.getItem(), stack);
-            tag.setDouble("vfnRotorIntake", rating.liters);
+            tag.setDouble("vfnRotorIntake", intake(rating.liters).doubleValue());
             tag.setDouble("vfnRotorEfficiency", rating.efficiency * 100);
             tag.setInteger("vfnRotorPressure", rating.pressureBar);
             tag.setInteger("vfnRotorTemperature", rating.temperatureK);
@@ -184,7 +184,8 @@ public final class MTEIntegratedFluidSteamTurbine extends MTEIntegratedFluidBoun
         tip.add(StatCollector.translateToLocalFormatted("GT5U.vfn.turbine_work", String.format(Locale.ROOT, "%.2f", tag.getDouble("shaftEuPerTick"))));
         if (tag.hasKey("vfnLastWetExpansion")) tip.add(StatCollector.translateToLocal(tag.getBoolean("vfnLastWetExpansion")
             ? "GT5U.vfn.turbine_stage_wet" : "GT5U.vfn.turbine_stage_dry"));
-        if (!tag.hasKey("vfnRotorIntake")) tip.add(StatCollector.translateToLocal("GT5U.vfn.turbine_bypass"));
+        if (tag.getBoolean("vfnInvalidRotor")) tip.add(StatCollector.translateToLocal("GT5U.gui.text.recipe_result.vfn_turbine_invalid"));
+        else if (!tag.hasKey("vfnRotorIntake")) tip.add(StatCollector.translateToLocal("GT5U.vfn.turbine_bypass"));
         else {
             tip.add(StatCollector.translateToLocalFormatted("GT5U.vfn.rotor_rating",
                 String.format(Locale.ROOT, "%.2f", tag.getDouble("vfnRotorIntake")),

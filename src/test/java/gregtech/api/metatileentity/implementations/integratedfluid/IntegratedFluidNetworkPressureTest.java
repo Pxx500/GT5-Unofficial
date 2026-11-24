@@ -50,8 +50,11 @@ class IntegratedFluidNetworkPressureTest {
         IFNTestSupport.restoreDrySteamAt475K(receiver, 0.49);
         long mass = source.getAmountQ() + receiver.getAmountQ();
         long energy = source.getCanonicalState().totalEnergy().rawUnits() + receiver.getCanonicalState().totalEnergy().rawUnits();
-        assertTrue(source.meterTo(receiver, 1_000_000_000L, 50_000) > 0);
-        assertEquals(0.5, receiver.getPressure(), 0.001);
+        assertEquals(0, source.meterTo(receiver, 1_000_000_000L, 50_000), "Not enough room for a steam portion");
+        long moved = source.meterTo(receiver, 1_000_000_000L, 54_000);
+        assertTrue(moved > 0 && moved % 6250 == 0);
+        assertTrue(receiver.getPressurePa() > 50000 && receiver.getPressurePa() <= 54000);
+        assertEquals(0, source.meterTo(receiver, 1_000_000_000L, 54_000));
         assertTrue(source.getPressure() < 3 && source.getPressure() > receiver.getPressure());
         assertEquals(mass, source.getAmountQ() + receiver.getAmountQ());
         assertEquals(energy, source.getCanonicalState().totalEnergy().rawUnits() + receiver.getCanonicalState().totalEnergy().rawUnits());

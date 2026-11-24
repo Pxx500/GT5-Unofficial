@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalInt;
 
 /** A fluid inventory whose energy includes both fluid internal energy and passive mechanical compliance. */
 public final class ClosedFluidChamber {
@@ -75,6 +76,14 @@ public final class ClosedFluidChamber {
 
     private boolean accepts(PureFluid incoming) {
         return isEmpty() || fluid == incoming;
+    }
+
+    /** A machine can retain its last portion without exporting it or treating a closed outlet as delivered. */
+    public boolean isUndrainableHeelAt(ClosedFluidChamber outlet, double pressureDropPa) {
+        return !isEmpty() && outlet != this && outlet.accepts(fluid)
+            && pressurePa() > outlet.pressurePa() + pressureDropPa
+            && state.solidMassFraction() < 1 && (outlet.isEmpty() || outlet.state.solidMassFraction() < 1)
+            && massKg.compareTo(BigDecimal.valueOf(fluid.packetMicroKg(state.vaporMassFraction()), 6)) <= 0;
     }
 
     /** Admits whole metered units from a constant-temperature supply at the fluid's reference pressure. */
@@ -211,10 +220,17 @@ public final class ClosedFluidChamber {
     /** Work enters the liquid stream. Negative shaft work denotes electricity consumed by the stroke. */
     public FluidTransfer pumpLiquidTo(ClosedFluidChamber receiver, BigDecimal maximumLiters,
         double maximumOutletPa, double pressureRisePa, long availableWorkEu) {
+        return pumpTo(receiver, maximumLiters, maximumOutletPa, pressureRisePa, availableWorkEu, 0, false);
+    }
+
+    public FluidTransfer pumpTo(ClosedFluidChamber receiver, BigDecimal maximumLiters,
+        double maximumOutletPa, double pressureRisePa, long availableWorkEu, double minimumInletPa, boolean gasIntake) {
         if (!Double.isFinite(pressureRisePa) || pressureRisePa < 0) throw new IllegalArgumentException("Invalid pump head");
-        if (availableWorkEu <= 0) return new FluidTransfer(this, receiver, BigDecimal.ZERO, BigDecimal.ZERO);
-        Draw draw = !isEmpty() && state.denseRegion() != PureFluid.DenseRegion.NONE ? Draw.METERED_BULK : Draw.METERED_LIQUID;
-        return meterPort(receiver, maximumLiters, new Port(draw, maximumOutletPa, -pressureRisePa, null, availableWorkEu));
+        if (!Double.isFinite(minimumInletPa) || minimumInletPa < 0) throw new IllegalArgumentException("Invalid inlet floor");
+        if (availableWorkEu <= 0 || pressurePa() < minimumInletPa) return new FluidTransfer(this, receiver, BigDecimal.ZERO, BigDecimal.ZERO);
+        Draw draw = !isEmpty() && state.denseRegion() != PureFluid.DenseRegion.NONE ? Draw.METERED_BULK
+            : gasIntake ? Draw.METERED_VAPOR : Draw.METERED_LIQUID;
+        return meterPort(receiver, maximumLiters, new Port(draw, maximumOutletPa, -pressureRisePa, null, availableWorkEu), minimumInletPa);
     }
 
     private record Port(Draw draw, double maximumOutletPa, double requiredInletHeadPa, ExpansionStage stage, long workBudgetEu) {
@@ -238,6 +254,10 @@ public final class ClosedFluidChamber {
     }
 
     private FluidTransfer meterPort(ClosedFluidChamber receiver, BigDecimal maximumLiters, Port port) {
+        return meterPort(receiver, maximumLiters, port, 0);
+    }
+
+    private FluidTransfer meterPort(ClosedFluidChamber receiver, BigDecimal maximumLiters, Port port, double minimumInletPa) {
         FluidTransfer unchanged = new FluidTransfer(this, receiver, BigDecimal.ZERO, BigDecimal.ZERO);
         if (isEmpty() || this == receiver || !receiver.accepts(fluid) || maximumLiters.signum() <= 0
             || !Double.isFinite(port.maximumOutletPa()) || receiver.pressurePa() >= port.maximumOutletPa()
@@ -250,8 +270,7 @@ public final class ClosedFluidChamber {
             double fraction = vapor ? state.vaporMassFraction() : state.liquidMassFraction();
             if (fraction <= 0 || solid >= 1 || vapor && solid > 0) return unchanged;
             BigDecimal available = massKg.multiply(BigDecimal.valueOf(fraction));
-            BigDecimal perKg = BigDecimal.valueOf(vapor ? fluid.vaporSpecificVolume(state.temperatureKelvin(), pressurePa())
-                : fluid.liquidVolume(pressurePa()));
+            BigDecimal perKg = BigDecimal.valueOf(fluid.phaseLitersPerKg(state, vapor));
             if (solid > 0) maximumLiters = maximumLiters.multiply(BigDecimal.valueOf(1 - solid));
             upper = maximumLiters.divide(perKg, 6, RoundingMode.DOWN).min(available)
                 .movePointRight(6).setScale(0, RoundingMode.DOWN).longValueExact();
@@ -271,7 +290,7 @@ public final class ClosedFluidChamber {
         long trial = upper;
         while (low < upper) {
             var candidate = tryTransfer(receiver, BigDecimal.valueOf(trial * packet, 6), entropy, port);
-            if (candidate == null) {
+            if (candidate == null || candidate.source().pressurePa() < minimumInletPa) {
                 upper = trial - 1;
             } else {
                 best = candidate;
@@ -295,7 +314,7 @@ public final class ClosedFluidChamber {
         long packet = fluid.packetMicroKg(state.vaporMassFraction());
         long upper = meteredBulkMicroKg(BigDecimal.valueOf(liters), solid) / packet;
         var share = BigDecimal.valueOf(firstShare);
-        long minimum = Math.max(2, (long) Math.ceil(Math.max(1 / firstShare, 1 / (1 - firstShare))));
+        long minimum = minimumBulkPortions(firstShare);
         long low = minimum - 1;
         var entropy = entropyEuPerKelvin().add(first.entropyEuPerKelvin()).add(second.entropyEuPerKelvin());
         var best = unchanged;
@@ -326,10 +345,34 @@ public final class ClosedFluidChamber {
         return best;
     }
 
+    /** Checks inlet inventory only. An empty or fully frozen chamber is not an undersized stroke. */
+    public boolean intakeStrokeTooSmall(double liters, double firstShare) {
+        if (!Double.isFinite(liters) || liters <= 0 || !(firstShare > 0 && firstShare <= 1) || isEmpty() || state.solidMassFraction() >= 1) return false;
+        long swept = meteredBulkMicroKg(BigDecimal.valueOf(liters), state.solidMassFraction());
+        return swept / fluid.packetMicroKg(state.vaporMassFraction()) < minimumBulkPortions(firstShare);
+    }
+
+    private static long minimumBulkPortions(double firstShare) {
+        return firstShare == 1 ? 1 : (long) Math.ceil(Math.max(1 / firstShare, 1 / (1 - firstShare)));
+    }
+
     private long meteredBulkMicroKg(BigDecimal maximumLiters, double solidFraction) {
         var liters = BigDecimal.valueOf(volumeLiters());
-        return maximumLiters.min(liters).multiply(massKg).multiply(BigDecimal.valueOf(1 - solidFraction))
-            .movePointRight(6).divide(liters, 0, RoundingMode.DOWN).longValueExact();
+        return maximumLiters.min(liters).multiply(mobileMicroKg(solidFraction)).divide(liters, 0, RoundingMode.DOWN).longValueExact();
+    }
+
+    private BigDecimal mobileMicroKg(double solidFraction) {
+        return massKg.movePointRight(6).multiply(BigDecimal.valueOf(1 - solidFraction));
+    }
+
+    /** Whole-liter inlet sample containing one bulk portion, before any downstream restrictions. */
+    public OptionalInt minimumBulkStrokeLiters() {
+        if (isEmpty()) return OptionalInt.empty();
+        var mobile = mobileMicroKg(state.solidMassFraction());
+        var portion = BigDecimal.valueOf(fluid.packetMicroKg(state.vaporMassFraction()));
+        if (mobile.compareTo(portion) < 0) return OptionalInt.empty();
+        var liters = portion.multiply(BigDecimal.valueOf(volumeLiters())).divide(mobile, 0, RoundingMode.CEILING);
+        return liters.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0 ? OptionalInt.empty() : OptionalInt.of(liters.intValueExact());
     }
 
     private BigDecimal outflowEnergy(BigDecimal transferredMass, Draw draw) {
@@ -364,9 +407,16 @@ public final class ClosedFluidChamber {
                 // Estimate against the filled outlet, then verify the paid lift with the final heated state
                 double backpressure = Math.max(receiver.pressurePa(), fluid.exhaustPressureBound(receiver.volume,
                     exhaustMass.doubleValue(), exhaustEnergy.divide(exhaustMass, MathContext.DECIMAL128).doubleValue()));
-                double inletVolumePerKg = port.draw() == Draw.METERED_LIQUID ? fluid.liquidVolume(inletFloorPa)
-                    : Math.max(volume.litersAtPressure(pressurePa()) / massKg.doubleValue(),
+                double inletVolumePerKg;
+                if (port.draw() == Draw.METERED_BULK) {
+                    inletVolumePerKg = Math.max(volume.litersAtPressure(pressurePa()) / massKg.doubleValue(),
                         volume.litersAtPressure(sourceAfter.pressurePa()) / sourceAfter.massKg.doubleValue());
+                } else {
+                    boolean vapor = port.draw() == Draw.METERED_VAPOR;
+                    inletVolumePerKg = fluid.phaseLitersPerKg(state, vapor);
+                    if ((vapor ? sourceAfter.state.vaporMassFraction() : sourceAfter.state.liquidMassFraction()) > 0)
+                        inletVolumePerKg = Math.max(inletVolumePerKg, fluid.phaseLitersPerKg(sourceAfter.state, vapor));
+                }
                 pumpEuPerPa = 0.001 * transferredMass.doubleValue() * inletVolumePerKg;
                 double rise = Math.max(0, backpressure - inletFloorPa);
                 var cost = BigDecimal.valueOf(pumpEuPerPa * (rise + PUMP_FRICTION_PA) / PUMP_EFFICIENCY)

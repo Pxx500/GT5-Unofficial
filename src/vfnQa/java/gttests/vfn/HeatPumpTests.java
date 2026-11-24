@@ -14,7 +14,9 @@ import gregtech.api.GregTechAPI;
 import gregtech.api.enums.Mods;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInputHatch;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidOutputHatch;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPipe;
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.ClosedFluidChamber;
 import gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.PureFluid;
@@ -54,18 +56,298 @@ public class HeatPumpTests {
         return placeAt(helper.getWorld(), p.x(), p.y(), p.z(), energyHatchId);
     }
 
+    static Rig placeDiluteOxygen(GameTestHelper h) {
+        var rig = place(h);
+        var p = h.absolute("controller");
+        InjectorTests.placeAt(h.getWorld(), p.x() - 2, p.y(), p.z() + 1, (short) 5773, ForgeDirection.EAST);
+        return rig;
+    }
+
+    static void startDiluteOxygen(GameTestHelper h, Rig rig) {
+        var tile = rig.pump().getBaseMetaTileEntity();
+        var p = h.absolute("controller");
+        var injector = (IGregTechTileEntity) h.getWorld().getTileEntity(p.x() - 2, p.y(), p.z() + 1);
+        h.assertTrue(rig.pump().checkStructure(true, tile), "Heat pump formed");
+        rig.pump().setFluidAmountPerOperation(1000);
+        rig.pump().setOperatingMode(HeatPumpMode.TARGET_ENERGY);
+        rig.pump().setTargetEnergy(128);
+        rig.pump().setTargetHeating(false);
+        rig.pump().fixAllIssues();
+        h.assertEquals(8, injector.fill(ForgeDirection.WEST, net.minecraftforge.fluids.FluidRegistry.getFluidStack("oxygen", 8), true),
+            "Eight ordinary units supplied to a 10000 L inlet");
+        h.assertEquals(1L, rig.supply().injectEnergyUnits(ForgeDirection.NORTH, 128, 1), "Power available");
+        tile.enableWorking();
+    }
+
+    @GameTest(template = "radiator", timeoutTicks = 450)
+    public static void roomTemperatureHeliumCannotEnterTheWorkingChamber(GameTestHelper h) {
+        var pos = h.absolute("controller");
+        var rig = place(h, (short) gregtech.api.enums.MetaTileEntityIDs.ENERGY_HATCH_IV.ID);
+        var injector = (gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInjectorHatch)
+            InjectorTests.placeAt(h.getWorld(), pos.x()-2, pos.y(), pos.z()+1, (short) 5773, ForgeDirection.EAST).getMetaTileEntity();
+        long[] supplied = { 0 }, admitted = { 0 };
+        boolean[] running = { false };
+        h.onEachTick("deliver GT helium and power", () -> {
+            if (!running[0]) return;
+            if (supplied[0] == 0) supplied[0] += 8192 * rig.supply().injectEnergyUnits(ForgeDirection.NORTH, 8192, 1);
+            admitted[0] += injector.fill(net.minecraftforge.fluids.FluidRegistry.getFluidStack("helium", 32), true);
+        });
+        h.startSequence().thenWaitUntil(() -> h.assertTrue(injector.getNetwork() != null
+            && injector.getNetwork() == rig.input().getNetwork() && rig.output().getNetwork() != null
+            && rig.pump().checkStructure(true, rig.pump().getBaseMetaTileEntity()), "Formed machine and separate ports"))
+            .thenExecute(() -> {
+                rig.pump().setFluidAmountPerOperation(10000);
+                rig.pump().setOperatingMode(HeatPumpMode.TARGET_TEMPERATURE);
+                rig.pump().setTargetTemperatureDelta(3);
+                rig.pump().fixAllIssues();
+                rig.pump().getBaseMetaTileEntity().enableWorking();
+                running[0] = true;
+            }).thenWaitUntil(() -> h.assertEquals(gregtech.api.recipe.check.SimpleCheckRecipeResult.ofFailure("vfn_chamber_intake"),
+                rig.pump().getCheckRecipeResult(), "A full stroke is available but cannot enter the working chamber"))
+            .thenIdle(80).thenExecute(() -> {
+                var feed = rig.input().getNetwork();
+                h.assertTrue(admitted[0] > 1 && !feed.intakeStrokeTooSmall(10000, 1), "More than one feed portion at the inlet");
+                h.assertTrue(feed.getPressure() > 0 && feed.getPressure() <= 0.9, "Positive pressure within the injector limit");
+                h.assertEquals(admitted[0] * 111111L, feed.getAmountQ(), "Every offered portion retained at inlet");
+                h.assertEquals(0L, rig.inventory().getLong("pumpMicroKg") + rig.output().getNetwork().getAmountQ(), "No partial intake");
+                h.assertTrue(supplied[0] > 0, "Working power supply");
+                h.assertEquals(supplied[0], rig.supply().getStoredEU(), "No charge for refused intake");
+                h.recordDiagnostic("Warm inlet: " + admitted[0] + " GT units, " + feed.getTemperature() + " K, "
+                    + feed.getPressure() + " bar, " + supplied[0] + " EU retained");
+            }).thenSucceed();
+    }
+
+    @GameTest(template = "water_line", timeoutTicks = 8000)
+    public static void injectorHeliumStartsPoweredCoolingLine(GameTestHelper h) {
+        var site = RemoteMachineSite.at(h, "controller");
+        var feed = placeSteelShell(site.world(), site.x(), site.y(), site.z(),
+            MTEIntegratedFluidLiquidPump.HIGH_PRESSURE_ID,
+            (short) gregtech.api.enums.MetaTileEntityIDs.ENERGY_HATCH_LuV.ID);
+        var chiller = placeSteelShell(site.world(), site.x() + 4, site.y(), site.z(), (short) 32030, (short) 44,
+            MTEIntegratedFluidInputHatch.REINFORCED_ID, (short) 5772);
+        var link = (MTEIntegratedFluidPipe)
+            site.place(2, 0, 1, MTEIntegratedFluidPipe.REINFORCED_ID,
+                ForgeDirection.WEST).getMetaTileEntity();
+        h.assertTrue(link.connect(ForgeDirection.WEST) > 0 && link.connect(ForgeDirection.EAST) > 0, "Interstage pipe connected");
+        site.place(2, 0, 2, 5775, ForgeDirection.SOUTH);
+        var jacket = (MTEIntegratedFluidPipe)
+            site.place(2, 0, 3, 5770, ForgeDirection.NORTH).getMetaTileEntity();
+        var water = site.place(2, 0, 4, 5773, ForgeDirection.NORTH);
+        h.assertTrue(link.connect(ForgeDirection.SOUTH) > 0 && jacket.connect(ForgeDirection.NORTH) > 0
+            && jacket.connect(ForgeDirection.SOUTH) > 0, "Water and delivery header share a thermal contact");
+        for (int y = 1; y <= 2; y++) {
+            var hot = (MTEIntegratedFluidPipe) site.place(2, y, 1, MTEIntegratedFluidPipe.REINFORCED_ID, ForgeDirection.DOWN).getMetaTileEntity();
+            site.place(2, y, 2, 5775, ForgeDirection.SOUTH);
+            var cold = (MTEIntegratedFluidPipe) site.place(2, y, 3, 5770, ForgeDirection.DOWN).getMetaTileEntity();
+            h.assertTrue(hot.connect(ForgeDirection.DOWN) > 0 && cold.connect(ForgeDirection.DOWN) > 0
+                && hot.connect(ForgeDirection.SOUTH) > 0 && cold.connect(ForgeDirection.NORTH) > 0, "Connected aftercooler row");
+        }
+        var waterMeter = new AmbientTests.AmbientMeter(h, jacket::getNetwork);
+        var injector = site.place(-2, 0, 1, 5773, ForgeDirection.EAST);
+        var pump = (MTEIntegratedFluidLiquidPump) feed.controller().getMetaTileEntity();
+        var cooler = (MTEHeatPump) chiller.controller().getMetaTileEntity();
+        boolean[] running = { false };
+        long[] admitted = { 0 }, feedEu = { 0 }, chillerEu = { 0 }, waterEnergy = { 0 };
+        h.onEachTick("deliver ordinary GT helium and meter power at both hatches", () -> {
+            if (!running[0]) return;
+            admitted[0] += injector.fill(ForgeDirection.WEST, net.minecraftforge.fluids.FluidRegistry.getFluidStack("helium", 32), true);
+            if (feed.supply().getEUCapacity() - feed.supply().getStoredEU() >= 8192)
+                feedEu[0] += 8192 * feed.supply().injectEnergyUnits(ForgeDirection.NORTH, 8192, 1);
+            if (chiller.supply().getEUCapacity() - chiller.supply().getStoredEU() >= 2048)
+                chillerEu[0] += 2048 * chiller.supply().injectEnergyUnits(ForgeDirection.NORTH, 2048, 1);
+        });
+        h.startSequence().thenWaitUntil(() -> h.assertTrue(link.getNetwork() != null && link.getNetwork() == feed.output().getNetwork()
+            && link.getNetwork() == chiller.input().getNetwork() && pump.checkStructure(true, feed.controller())
+            && cooler.checkStructure(true, chiller.controller())
+            && water.fill(ForgeDirection.SOUTH, new net.minecraftforge.fluids.FluidStack(net.minecraftforge.fluids.FluidRegistry.WATER, 64), false) > 0,
+            "Two formed multiblocks with an operational water supply"))
+            .thenExecute(() -> {
+                h.assertEquals(0L, feed.input().getNetwork().getAmountQ() + link.getNetwork().getAmountQ()
+                    + chiller.output().getNetwork().getAmountQ(), "Empty plant");
+                h.assertTrue(water.fill(ForgeDirection.SOUTH, new net.minecraftforge.fluids.FluidStack(net.minecraftforge.fluids.FluidRegistry.WATER, 64), true) > 0,
+                    "Ambient water supplied through its own injector");
+                waterEnergy[0] = waterMeter.withoutAmbient(jacket.getNetwork());
+                pump.fixAllIssues();
+                pump.setGasIntake(true);
+                pump.setMode(2);
+                pump.setInterval(10);
+                pump.setTarget(3000);
+                cooler.fixAllIssues();
+                cooler.setFluidAmountPerOperation(10000);
+                cooler.setOperatingMode(HeatPumpMode.TARGET_TEMPERATURE);
+                cooler.setTargetTemperatureDelta(320);
+                feed.controller().enableWorking();
+                chiller.controller().enableWorking();
+                running[0] = true;
+            }).thenWaitUntil(() -> {
+                var outlet = chiller.output().getNetwork();
+                var saved = new NBTTagCompound();
+                cooler.saveNBTData(saved);
+                long compressed = feedEu[0] - feed.supply().getStoredEU(), cooled = chillerEu[0] - chiller.supply().getStoredEU();
+                h.assertTrue(outlet.getAmountQ() > 0 && cooled > 0, "Waiting for cooled helium: interstage " + link.getNetwork().getPressure()
+                    + " bar, " + link.getNetwork().getTemperature() + " K, charge " + saved.getLong("pumpMicroKg") + " microkg, outlet " + outlet.getAmountQ()
+                    + " microkg, paid " + compressed + " and " + cooled + " EU, " + pump.status() + ", " + cooler.getCheckRecipeResult().getDisplayString());
+                h.assertEquals(admitted[0] * 111111L, feed.input().getNetwork().getAmountQ() + link.getNetwork().getAmountQ()
+                    + saved.getLong("pumpMicroKg") + outlet.getAmountQ(), "All helium entered through the injector");
+                h.assertTrue(compressed > 0, "Separate feed pump paid for delivery");
+                h.assertTrue(waterMeter.withoutAmbient(jacket.getNetwork()) > waterEnergy[0], "Cooling water received compression heat");
+                h.recordDiagnostic(admitted[0] + " GT units admitted, " + outlet.getAmountQ() + " microkg out, feed pump "
+                    + compressed + " EU, heat pump " + cooled + " EU");
+            }).thenSucceed();
+    }
+
+    @GameTest(template = "radiator", timeoutTicks = 1500)
+    public static void compressedWarmHeliumYieldsLiquid(GameTestHelper h) {
+        var rig = placeLiquefier(h);
+        h.startSequence().thenWaitUntil(() -> rig.ready(h)).thenExecute(() -> rig.start(h))
+            .thenWaitUntil(() -> rig.checkLiquid(h)).thenSucceed();
+    }
+
+    static Liquefier placeLiquefier(GameTestHelper h) {
+        var site = RemoteMachineSite.at(h, "controller");
+        var shell = placeSteelShell(site.world(), site.x(), site.y(), site.z(), (short) 32030,
+            (short) gregtech.api.enums.MetaTileEntityIDs.ENERGY_HATCH_UXV.ID,
+            MTEIntegratedFluidInputHatch.REINFORCED_ID, MTEIntegratedFluidOutputHatch.REINFORCED_ID);
+        for (int dy = 0; dy < 3; dy++) for (int dz = 1; dz <= 3; dz++) {
+            var pipe = (MTEIntegratedFluidPipe) site.place(2, dy, dz, MTEIntegratedFluidPipe.REINFORCED_ID,
+                ForgeDirection.WEST).getMetaTileEntity();
+            var join = dz > 1 ? ForgeDirection.NORTH : dy > 0 ? ForgeDirection.DOWN : ForgeDirection.WEST;
+            h.assertTrue(pipe.connect(join) > 0, "Cryogenic receiver connected");
+        }
+        for (int dy = 0; dy < 4; dy++) for (int dz = 1; dz <= 7; dz++) {
+            var pipe = (MTEIntegratedFluidPipe)
+                site.place(-2, dy, dz, MTEIntegratedFluidPipe.REINFORCED_ID,
+                    ForgeDirection.EAST).getMetaTileEntity();
+            ForgeDirection join = dz > 1 ? ForgeDirection.NORTH : dy > 0 ? ForgeDirection.DOWN : ForgeDirection.EAST;
+            h.assertTrue(pipe.connect(join) > 0, "Feed manifold connected");
+        }
+        return new Liquefier(h, shell);
+    }
+
+    static final class Liquefier {
+        private final SteelShell shell;
+        private final MTEHeatPump pump;
+        private final AmbientTests.AmbientMeter hotMeter, coldMeter;
+        private static final long START_MASS = 29 * 300000L, START_HEAT = 29 * 281920739991L;
+        private long paidIn;
+        private boolean power;
+
+        Liquefier(GameTestHelper h, SteelShell shell) {
+            this.shell = shell;
+            pump = (MTEHeatPump) shell.controller().getMetaTileEntity();
+            hotMeter = new AmbientTests.AmbientMeter(h, shell.input()::getNetwork);
+            coldMeter = new AmbientTests.AmbientMeter(h, shell.output()::getNetwork);
+            h.onEachTick("meter electricity to the liquefier", () -> {
+                if (!power) return;
+                long volts = shell.supply().getInputVoltage();
+                if (shell.supply().getEUCapacity() - shell.supply().getStoredEU() >= volts)
+                    paidIn += volts * shell.supply().injectEnergyUnits(ForgeDirection.NORTH, volts, 1);
+            });
+        }
+
+        void ready(GameTestHelper h) {
+            h.assertTrue(shell.input().getNetwork() != null && shell.input().getNetwork().getTopologySnapshot().baseVolume().toWholeLiters() == 2900
+                && shell.output().getNetwork() != null && shell.output().getNetwork().getTopologySnapshot().baseVolume().toWholeLiters() == 1000
+                && pump.checkStructure(true, shell.controller()), "Rated feed and receiver connected");
+        }
+
+        void start(GameTestHelper h) {
+            var feed = shell.input().getNetwork();
+            feed.replaceCanonicalState(IFNCanonicalState.fromRaw("helium", START_MASS, START_HEAT));
+            h.assertTrue(Math.abs(feed.getTemperature() - 300) < 0.1 && Math.abs(feed.getPressure() - 19) < 0.2,
+                "Prepared warm compressed gas, no cryogenic charge");
+            h.assertEquals(0L, shell.output().getNetwork().getAmountQ(), "Empty receiver");
+            pump.setFluidAmountPerOperation(10000);
+            pump.setOperatingMode(HeatPumpMode.TARGET_TEMPERATURE);
+            pump.setTargetTemperatureDelta(2.49f);
+            pump.fixAllIssues();
+            shell.controller().enableWorking();
+            power = true;
+        }
+
+        void checkLiquid(GameTestHelper h) {
+            var outlet = shell.output().getNetwork();
+            var state = outlet.getSolvedState();
+            h.assertTrue(state.isPresent() && state.get().liquidMassFraction() * outlet.getAmountQ() >= 111111,
+                "Waiting for one liquid portion: " + outlet.getAmountQ() + " microkg at " + outlet.getTemperature() + " K");
+            var saved = new NBTTagCompound();
+            pump.saveNBTData(saved);
+            long mass = saved.getLong("pumpMicroKg") + shell.input().getNetwork().getAmountQ() + outlet.getAmountQ();
+            h.assertEquals(START_MASS, mass, "No makeup helium after charging the warm supply");
+            long paid = paidIn - shell.supply().getStoredEU();
+            long removed = START_HEAT - hotMeter.withoutAmbient(shell.input().getNetwork()) - coldMeter.withoutAmbient(outlet) - saved.getLong("pumpMicroEu");
+            h.assertTrue(paid > 0 && removed > 0, "Paid refrigeration removed internal energy");
+            h.recordDiagnostic("Cold outlet: " + outlet.getAmountQ() + " microkg, " + outlet.getTemperature()
+                + " K, liquid fraction " + state.get().liquidMassFraction() + ", paid " + paid + " EU");
+        }
+    }
+
+    @GameTest(template = "radiator", timeoutTicks = 450)
+    public static void diluteOxygenWaitsWithoutPowerDebit(GameTestHelper h) {
+        var rig = placeDiluteOxygen(h);
+        var p = h.absolute("controller");
+        var injector = (IGregTechTileEntity) h.getWorld().getTileEntity(p.x() - 2, p.y(), p.z() + 1);
+        long[] atCutoff = new long[1];
+        h.startSequence().thenIdle(25).thenExecute(() -> startDiluteOxygen(h, rig))
+            .thenWaitUntil(() -> h.assertEquals(gregtech.api.recipe.check.SimpleCheckRecipeResult.ofFailure("vfn_inlet_portion"),
+            rig.pump().getCheckRecipeResult(), "Controller identifies a stroke with less than one oxygen portion"))
+            .thenIdle(120).thenExecute(() -> {
+                h.assertEquals(128L, rig.supply().getStoredEU(), "Repeated intake attempts cost no EU");
+                h.assertEquals(8 * 888_888L, rig.input().getNetwork().getAmountQ(), "All oxygen stayed at the inlet");
+                h.assertEquals(0L, rig.inventory().getLong("pumpMicroKg"), "No hidden fraction in the machine");
+                h.assertEquals(0L, rig.output().getNetwork().getAmountQ(), "No oxygen delivered");
+                var gas = net.minecraftforge.fluids.FluidRegistry.getFluidStack("oxygen", 100);
+                int extra = injector.fill(ForgeDirection.WEST, gas, true);
+                h.assertTrue(extra > 0, "Initial eight units did not fill the inlet to its limit");
+                atCutoff[0] = (8 + extra) * 888_888L;
+                h.assertEquals(0, injector.fill(ForgeDirection.WEST, gas, false), "Another whole GT unit would exceed the inlet limit");
+            }).thenIdle(120).thenExecute(() -> {
+                h.assertEquals(atCutoff[0], rig.input().getNetwork().getAmountQ(), "Even a full passive supply has no deliverable stroke");
+                h.assertEquals(128L, rig.supply().getStoredEU(), "Waiting at the cutoff cannot debit electricity");
+                h.recordDiagnostic("Uncooled supply at cutoff: " + atCutoff[0] / 888_888 + " GT units, "
+                    + rig.input().getNetwork().getTemperature() + " K, " + rig.input().getNetwork().getPressure() + " bar");
+            }).thenSucceed();
+    }
+
     static Rig placeAt(World w, int x, int y, int z, short energyHatchId) {
+        var shell = placeSteelShell(w, x, y, z, (short) 32030, energyHatchId);
+        return new Rig((MTEHeatPump) shell.controller().getMetaTileEntity(), shell.input(), shell.output(), shell.supply());
+    }
+
+    record SteelShell(IGregTechTileEntity controller, MTEIntegratedFluidInputHatch input,
+        MTEIntegratedFluidOutputHatch output, IGregTechTileEntity supply) {}
+
+    static void placeSteelCasings(World w, int x, int y, int z) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = 0; dz <= 2; dz++) w.setBlock(x + dx, y + dy, z + dz, GregTechAPI.sBlockCasings2, 0, 3);
             }
         }
-        var controller = InjectorTests.placeAt(w, x, y, z, (short) 32030, ForgeDirection.NORTH);
-        var input = InjectorTests.placeAt(w, x - 1, y, z + 1, (short) 5771, ForgeDirection.WEST);
-        var output = InjectorTests.placeAt(w, x + 1, y, z + 1, (short) 5772, ForgeDirection.EAST);
-        var supply = InjectorTests.placeAt(w, x - 1, y, z, energyHatchId, ForgeDirection.NORTH);
+    }
+
+    static SteelShell placeSteelShell(World w, int x, int y, int z, short controllerId, short energyHatchId) {
+        return placeSteelShell(w, x, y, z, controllerId, energyHatchId, (short) 5771, (short) 5772);
+    }
+
+    static SteelShell placeSteelShell(World w, int x, int y, int z, short controllerId, short energyHatchId, short inputId, short outputId) {
+        return placeSteelShell(w, x, y, z, controllerId, energyHatchId, inputId, outputId, ForgeDirection.NORTH);
+    }
+
+    static SteelShell placeSteelShell(World w, int x, int y, int z, short controllerId, short energyHatchId, short inputId,
+        short outputId, ForgeDirection controllerFace) {
+        return placeSteelShell(w, x, y, z, controllerId, energyHatchId, inputId, outputId, controllerFace, 1, 0);
+    }
+
+    static SteelShell placeSteelShell(World w, int x, int y, int z, short controllerId, short energyHatchId, short inputId,
+        short outputId, ForgeDirection controllerFace, int portRow, int powerHeight) {
+        if (controllerFace != ForgeDirection.NORTH && controllerFace != ForgeDirection.SOUTH) throw new IllegalArgumentException("Controller face");
+        placeSteelCasings(w, x, y, z);
+        var controller = InjectorTests.placeAt(w, x, y, controllerFace == ForgeDirection.SOUTH ? z + 2 : z, controllerId, controllerFace);
+        var input = InjectorTests.placeAt(w, x - 1, y, z + portRow, inputId, ForgeDirection.WEST);
+        var output = InjectorTests.placeAt(w, x + 1, y, z + portRow, outputId, ForgeDirection.EAST);
+        var supply = InjectorTests.placeAt(w, x - 1, y + powerHeight, z, energyHatchId, ForgeDirection.NORTH);
         InjectorTests.placeAt(w, x + 1, y, z, (short) 15497, ForgeDirection.NORTH);
-        return new Rig((MTEHeatPump) controller.getMetaTileEntity(), (MTEIntegratedFluidInputHatch) input.getMetaTileEntity(),
+        return new SteelShell(controller, (MTEIntegratedFluidInputHatch) input.getMetaTileEntity(),
             (MTEIntegratedFluidOutputHatch) output.getMetaTileEntity(), supply);
     }
 
@@ -471,8 +753,21 @@ public class HeatPumpTests {
                 helper.assertEquals(amounts[0], rig.output().getNetwork().getAmountQ() + saved.getLong("pumpPartnerMicroKg"), "Red ledger closes");
                 helper.assertEquals(amounts[1], saved.getLong("pumpMicroKg"), "Blue remains inside under backpressure");
                 helper.assertTrue(Math.abs(rig.pump().getCOP() - 4) < 0.01, "Active batch kept blue COP 4 despite changing the controls");
+                energy[0] = saved.getLong("pumpMicroEu");
+                line.blueInput().getNetwork().freeze("Isolate feed while the sub-portion heel settles");
                 line.blueOutput().getNetwork().replaceCanonicalState(IFNCanonicalState.empty());
-            }).thenWaitUntil(() -> helper.assertTrue(line.blueOutput().getNetwork().getAmountQ() > 0, "Released blue outlet receives its own stream"))
+            }).thenWaitUntil(() -> helper.assertTrue(!rig.inventory().getBoolean("pumpBatchActive"), "Open outlet releases the cycle without a fractional delivery"))
+            .thenExecute(() -> {
+                var held = rig.inventory();
+                helper.assertEquals(0L, line.blueOutput().getNetwork().getAmountQ(), "Sub-portion mass did not leave the machine");
+                helper.assertEquals(amounts[1], held.getLong("pumpMicroKg"), "Blue mass stays in the blue chamber");
+                helper.assertEquals(energy[0], held.getLong("pumpMicroEu"), "Completing the stroke cannot reset the blue energy");
+                rig.pump().setFluidAmountPerOperation(1000);
+                rig.pump().setOperatingMode(HeatPumpMode.TARGET_ENERGY);
+                rig.pump().setTargetEnergy(32);
+                line.blueInput().getNetwork().clearFrozen();
+            }).thenWaitUntil(() -> helper.assertTrue(line.blueOutput().getNetwork().getAmountQ() > 0,
+                "A later batch delivers a whole portion through the blue outlet"))
             .thenExecute(() -> {
                 var saved = rig.inventory();
                 long primary = saved.getLong("pumpMicroKg"), partner = saved.getLong("pumpPartnerMicroKg");

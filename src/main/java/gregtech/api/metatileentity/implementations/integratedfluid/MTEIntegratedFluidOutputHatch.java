@@ -17,7 +17,7 @@ import gregtech.api.enums.Dyes;
 import gregtech.api.interfaces.ITexture;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
-import gregtech.api.metatileentity.implementations.MTEHatch;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPipe.Wall;
 import gregtech.api.render.TextureFactory;
 import gregtech.api.util.GTUtility;
 import mcp.mobius.waila.api.IWailaConfigHandler;
@@ -28,29 +28,24 @@ import mcp.mobius.waila.api.IWailaDataAccessor;
  * This hatch can be connected to integrated fluid pipes to access shared fluid data
  * across a tree-structured network.
  */
-public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegratedFluidMember {
+public class MTEIntegratedFluidOutputHatch extends MTEIntegratedFluidMachineHatch {
+
+    public static final short REINFORCED_ID = 5783;
 
     private IntegratedFluidNetwork network;
     private java.util.UUID networkId;
 
-    public MTEIntegratedFluidOutputHatch(int aID, String aName, String aNameRegional, int aTier) {
-        super(
-            aID,
-            aName,
-            aNameRegional,
-            aTier,
-            0, // No inventory slots
-            new String[] { "Integrated Fluid Output Hatch", "Outputs fluid from the Integrated Fluid Network",
-                "Connect with Integrated Fluid Pipes", "Each hatch adds 10,000L of network capacity" });
+    public MTEIntegratedFluidOutputHatch(int id, String name, String displayName, Wall wall) {
+        super(id, name, displayName, wall);
     }
 
-    public MTEIntegratedFluidOutputHatch(String aName, int aTier, String[] aDescription, ITexture[][][] aTextures) {
-        super(aName, aTier, 0, aDescription, aTextures);
+    private MTEIntegratedFluidOutputHatch(String name, Wall wall, String[] description, ITexture[][][] textures) {
+        super(name, wall, description, textures);
     }
 
     @Override
-    public IMetaTileEntity newMetaEntity(IGregTechTileEntity aTileEntity) {
-        return new MTEIntegratedFluidOutputHatch(mName, mTier, mDescriptionArray, mTextures);
+    public IMetaTileEntity newMetaEntity(IGregTechTileEntity tile) {
+        return new MTEIntegratedFluidOutputHatch(mName, wall, mDescriptionArray, mTextures);
     }
 
     @Override
@@ -217,27 +212,6 @@ public class MTEIntegratedFluidOutputHatch extends MTEHatch implements IIntegrat
         if (getBaseMetaTileEntity() != null) {
             getBaseMetaTileEntity().issueTextureUpdate();
         }
-    }
-
-    @Override
-    public int getCapacityContribution() {
-        // Each output hatch adds 10,000L (10,000 mB) of capacity
-        return 10000;
-    }
-
-    @Override
-    public int getAccumulatorContribution() {
-        return 10_000;
-    }
-
-    @Override
-    public double getPassiveConductanceEuPerTickKelvin() {
-        return IntegratedFluidNetwork.PIPE_CONDUCTANCE_EU_PER_TICK_KELVIN;
-    }
-
-    @Override
-    public float getAccumulatorMaxPressureBar() {
-        return IFNPressurePolicy.DEFAULT_MAX_PRESSURE_BAR;
     }
 
     @Override

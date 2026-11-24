@@ -22,7 +22,8 @@ class IntegratedFluidNetworkStateTest {
         var before = receiver.getCanonicalState();
         long moved = source.meterTo(receiver, 10_000_000_000L, ceiling);
         assertTrue(moved > 0 && moved < supply);
-        assertEquals(ceiling, receiver.getPressurePa(), 1);
+        assertEquals(0, moved % 1_000_000);
+        assertEquals(0, source.meterTo(receiver, 10_000_000_000L, ceiling), "One more kilogram would overshoot");
         assertTrue(receiver.getPressurePa() <= ceiling);
         assertEquals(supply - moved, source.getAmountQ());
         assertEquals(existing + moved, receiver.getAmountQ());

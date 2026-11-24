@@ -1531,7 +1531,7 @@ public final class LoaderMetaPipeEntities implements Runnable {
      * - Integrated Fluid Output Hatch: Outputs fluid from the network
      * - Integrated Fluid Injector Hatch: Bridges GT fluid pipes with integrated fluid network
      *
-     * IDs used: 5770-5781
+     * IDs used: 5770-5783
      */
     private static void registerIntegratedFluidSystem() {
         // ID 5770: Integrated Fluid Pipe
@@ -1540,10 +1540,14 @@ public final class LoaderMetaPipeEntities implements Runnable {
             MTEIntegratedFluidPipe.Wall.REINFORCED);
 
         // ID 5771: Integrated Fluid Input Hatch (Tier 1/LV)
-        new MTEIntegratedFluidInputHatch(5771, "hatch.integrated_fluid_input", "Integrated Fluid Input Hatch", 1);
+        new MTEIntegratedFluidInputHatch(5771, "hatch.integrated_fluid_input", "Integrated Fluid Input Hatch", MTEIntegratedFluidPipe.Wall.STANDARD);
+        new MTEIntegratedFluidInputHatch(MTEIntegratedFluidInputHatch.REINFORCED_ID, "hatch.vfn_reinforced_input",
+            "Reinforced VFN Input Hatch", MTEIntegratedFluidPipe.Wall.REINFORCED);
 
         // ID 5772: Integrated Fluid Output Hatch (Tier 1/LV)
-        new MTEIntegratedFluidOutputHatch(5772, "hatch.integrated_fluid_output", "Integrated Fluid Output Hatch", 1);
+        new MTEIntegratedFluidOutputHatch(5772, "hatch.integrated_fluid_output", "Integrated Fluid Output Hatch", MTEIntegratedFluidPipe.Wall.STANDARD);
+        new MTEIntegratedFluidOutputHatch(MTEIntegratedFluidOutputHatch.REINFORCED_ID, "hatch.vfn_reinforced_output",
+            "Reinforced VFN Output Hatch", MTEIntegratedFluidPipe.Wall.REINFORCED);
 
         // ID 5773: Integrated Fluid Injector Hatch (Tier 1/LV) - bridges GT pipes with integrated network
         new MTEIntegratedFluidInjectorHatch(
@@ -1560,9 +1564,9 @@ public final class LoaderMetaPipeEntities implements Runnable {
             1);
         new MTEIntegratedFluidHeatExchanger(5775, "vfn.heat_exchanger", "VFN Heat Exchanger", 1);
         new MTEIntegratedFluidElectricBoiler(5776, "vfn.electric_boiler", "VFN Electric Boiler", 2);
-        new MTEIntegratedFluidSteamTurbine(5777, "vfn.steam_turbine", "VFN Steam Turbine", 2);
+        new MTEIntegratedFluidSteamTurbine(5777, "vfn.steam_turbine", "VFN Steam Turbine");
         new MTEIntegratedFluidVaporOutlet(5778, "vfn.vapor_outlet", "VFN Vapor Outlet", 1);
-        new MTEIntegratedFluidLiquidPump(5779, "vfn.liquid_pump", "VFN Liquid Pump", 2);
+        new MTEIntegratedFluidLiquidPump(5779, "vfn.liquid_pump", "VFN Pressure Pump", 2);
         new MTEIntegratedFluidLiquidPump(MTEIntegratedFluidLiquidPump.HIGH_PRESSURE_ID, "vfn.high_pressure_pump",
             "High Pressure VFN Pump", 4);
     }

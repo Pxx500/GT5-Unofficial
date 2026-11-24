@@ -91,7 +91,7 @@ class HorizonQAVfnPersistenceStressTest {
     private static void requireTransfer(IntegratedFluidNetwork source, IntegratedFluidNetwork sink, boolean accepted) {
         long initialMass = source.getAmountQ(), received = sink.getAmountQ();
         long sourceEnergy = energy(source), sinkEnergy = energy(sink);
-        long moved = source.meterTo(sink, 10_000_000L, Double.MAX_VALUE);
+        long moved = source.meterTo(sink, 50_000_000L, Double.MAX_VALUE);
         assertEquals(accepted, moved > 0);
         assertEquals(initialMass - moved, source.getAmountQ());
         assertEquals(received + moved, sink.getAmountQ());

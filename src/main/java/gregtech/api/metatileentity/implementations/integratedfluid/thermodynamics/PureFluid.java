@@ -6,7 +6,7 @@ import gregtech.api.enums.GTValues;
 
 /**
  * Equilibrium of solid, liquid and ideal vapor with constant heat capacities.
- * The condensed phases share a volume law. Hot water uses a smooth dense-fluid crossover.
+ * The condensed phases share a volume law. Hot water and industrial coolants use a smooth dense-fluid crossover.
  */
 public final class PureFluid {
 
@@ -29,33 +29,33 @@ public final class PureFluid {
         50.0,
         1000.0,
         50e6,
-        647.096);
+        new Crossover(500, 647.096, 22.064e6));
 
     private static final PureFluid OXYGEN = new PureFluid("oxygen", 888_888,
         90.0621, 100000, 0.875813, 1699, 919, 259.84, 213177, 5.12e8,
-        54.36, 1300, 13890, 50, 700, 2e6, 154.58);
+        54.36, 1300, 13890, 50, 700, 8e6, null);
 
     // Normal hydrogen. Effective vapor cp matches the 1 bar enthalpy rise from boiling to 295 K
     private static final PureFluid HYDROGEN = new PureFluid("hydrogen", 55_556,
         20.3244, 100000, 14.1046, 9748, 12518, 4124.5, 448915, 5.16e7,
-        13.957, 2200, 58200, 10, 700, 1e6, 33.1443);
+        13.957, 2200, 58200, 10, 700, 3e6, null);
 
     private static final PureFluid NITROGEN = new PureFluid("nitrogen", 777_778,
         77.2435, 100000, 1.23979, 2041, 1051, 296.8, 199320, 3.116e8,
-        63.151, 1450, 25700, 50, 700, 2e6, 126.192);
+        63.151, 1450, 25700, 50, 700, 6e6, null);
 
     // Normal helium-4 above the superfluid region. There is no fusion transition in this pressure range
     private static final PureFluid HELIUM = new PureFluid("helium", 111_111,
         4.20983, 100000, 8.003575, 5120, 5200, 2077.26, 20645, 1.89e6,
-        2.3, 5120, 0, 2.3, 1000, 2e5, 5.1953);
+        2.3, 5120, 0, 2.3, 1000, 2e6, null);
 
     // Gameplay working fluids, not measured pure substances. Super coolant carries more sensible heat per kg
     private static final PureFluid COOLANT = new PureFluid("ic2coolant", 1_000_000,
         400, 100000, 1, 4000, 2500, 450, 2100000, 2e9,
-        250, 2000, 250000, 50, 600, 10e6, 650);
+        250, 2000, 250000, 50, 900, 10e6, new Crossover(600, 650, 6.5e6));
     private static final PureFluid SUPER_COOLANT = new PureFluid("supercoolant", 1_000_000,
         450, 100000, 1, 6000, 3500, 450, 2600000, 2e9,
-        150, 2400, 220000, 50, 600, 10e6, 680);
+        150, 2400, 220000, 50, 900, 10e6, new Crossover(600, 680, 5.2e6));
 
     private static final PureFluid[] SUBSTANCES = { WATER, OXYGEN, HYDROGEN, NITROGEN, HELIUM, COOLANT, SUPER_COOLANT };
 
@@ -75,12 +75,14 @@ public final class PureFluid {
     private final double minTemperature;
     private final double maxTemperature;
     private final double maxPressure;
-    private final double criticalTemperature;
+    private record Crossover(double startK, double criticalK, double criticalPa) {}
+
+    private final Crossover crossover;
 
     private PureFluid(String id, long referenceUnitMicroKg, double referenceTemperature, double referencePressure, double liquidReferenceVolume,
         double liquidHeatCapacity, double vaporHeatCapacity, double gasConstant, double referenceLatentHeat,
         double liquidBulkModulus, double meltingTemperature, double solidHeatCapacity, double fusionEnthalpy,
-        double minTemperature, double maxTemperature, double maxPressure, double criticalTemperature) {
+        double minTemperature, double maxTemperature, double maxPressure, Crossover crossover) {
         this.id = id;
         this.referenceUnitMicroKg = referenceUnitMicroKg;
         this.referenceTemperature = referenceTemperature;
@@ -97,7 +99,7 @@ public final class PureFluid {
         this.minTemperature = minTemperature;
         this.maxTemperature = maxTemperature;
         this.maxPressure = maxPressure;
-        this.criticalTemperature = criticalTemperature;
+        this.crossover = crossover;
     }
 
     /** Game approximation of water from 50 to 1000 K and up to 50 MPa. */
@@ -105,7 +107,7 @@ public final class PureFluid {
         return WATER;
     }
 
-    /** Low-pressure oxygen, with a single effective solid phase and no dense supercritical states. */
+    /** Oxygen with solid, liquid, vapor and supercritical states. */
     public static PureFluid oxygen() {
         return OXYGEN;
     }
@@ -137,6 +139,14 @@ public final class PureFluid {
         return java.util.Optional.empty();
     }
 
+    private CubicIsotherm.Model cubicModel() {
+        if (this == HELIUM) return CubicIsotherm.Model.HELIUM;
+        if (this == NITROGEN) return CubicIsotherm.Model.NITROGEN;
+        if (this == HYDROGEN) return CubicIsotherm.Model.HYDROGEN;
+        if (this == OXYGEN) return CubicIsotherm.Model.OXYGEN;
+        return null;
+    }
+
     double referencePressurePa() {
         return referencePressure;
     }
@@ -144,6 +154,7 @@ public final class PureFluid {
     /** Equilibrated supply enthalpy at reference pressure. The declared phase resolves exact boiling. */
     double referenceStreamEnthalpy(double temperature, boolean vaporAtBoiling) {
         if (!supportsTemperature(temperature)) throw new UnsupportedStateException("Unsupported reference temperature");
+        if (cubicModel() != null) return cubicModel().at(temperature).atPressure(referencePressure, vaporAtBoiling).specificEnthalpyEuPerKg();
         if (temperature < meltingTemperature) return liquidHeatCapacity * (meltingTemperature - referenceTemperature)
             - fusionEnthalpy + solidHeatCapacity * (temperature - meltingTemperature);
         return referenceVaporFraction(temperature, vaporAtBoiling) == 1 ? vaporEnthalpy(temperature)
@@ -162,12 +173,12 @@ public final class PureFluid {
         return referenceLatentHeat + vaporHeatCapacity * (temperature - referenceTemperature);
     }
 
-    /** Single homogeneous stream in the hot-water model. Volumes in L/kg, h in EU/kg and s in EU/(kg K). */
-    record HotWater(double litersPerKg, double enthalpy, double entropy) {}
+    /** Single homogeneous stream in the crossover model. Volumes in L/kg, h in EU/kg and s in EU/(kg K). */
+    record HotStream(double litersPerKg, double enthalpy, double entropy) {}
 
-    HotWater hotWaterAtPressure(double temperature, double pressure) {
-        if (this != WATER || !(temperature > 500 && temperature <= 1000) || !(pressure > 0 && pressure <= maxPressure))
-            throw new UnsupportedStateException("Outside hot-water property range");
+    HotStream hotStreamAtPressure(double temperature, double pressure) {
+        if (crossover == null || !(temperature > crossover.startK && temperature <= maxTemperature) || !(pressure > 0 && pressure <= maxPressure))
+            throw new UnsupportedStateException("Outside hot-fluid property range");
         var line = new HotIsotherm(temperature);
         return line.stream(pressure, line.weight(pressure));
     }
@@ -181,7 +192,7 @@ public final class PureFluid {
             hl0 = liquidHeatCapacity * (t - referenceTemperature);
             hv = vaporEnthalpy(t);
             sl = liquidHeatCapacity * logT;
-            double d = t - 500;
+            double d = t - crossover.startK;
             width = 2000 * d * d / (d + 30);
             slope = 2000 * d * (d + 60) / ((d + 30) * (d + 30));
         }
@@ -192,9 +203,9 @@ public final class PureFluid {
             return Math.max(0, Math.min(1, 0.5 * (1 - delta / width)));
         }
 
-        HotWater stream(double p, double x) {
+        HotStream stream(double p, double x) {
             double blend = x * (1 - x), vl = liquidVolume(p), hl = hl0 + liquidPressureEnergy(p);
-            return new HotWater(vl + x * (vaporSpecificVolume(t, p) - vl),
+            return new HotStream(vl + x * (vaporSpecificVolume(t, p) - vl),
                 hl + x * (hv - hl) + (t * slope - width) * blend, sl + x * (vaporEntropy(logT, p) - sl) + slope * blend);
         }
 
@@ -213,7 +224,7 @@ public final class PureFluid {
                 if (residual > 0) lo = p;
                 else hi = p;
                 if (hi - lo <= 1e-13 * hi) {
-                    // Near 500 K the pressure interval collapses before the volume weight loses its precision
+                    // Near the start of the crossover the pressure interval collapses before the volume weight loses its precision
                     return state(p, Math.max(0, Math.min(1, (v - vl) / (vg - vl))));
                 }
                 double derivative = -(1 - x) * vl / (liquidBulkModulus + p) - x * vg / p;
@@ -227,7 +238,7 @@ public final class PureFluid {
 
         State state(double p, double x) {
             var fluid = stream(p, x);
-            var region = t >= criticalTemperature && p >= 22.064e6 ? DenseRegion.SUPERCRITICAL
+            var region = t >= crossover.criticalK && p >= crossover.criticalPa ? DenseRegion.SUPERCRITICAL
                 : x > 0 && x < 1 ? DenseRegion.CROSSOVER : DenseRegion.NONE;
             return new State(t, p, region == DenseRegion.NONE && x == 1 ? 1 : 0, 0,
                 fluid.enthalpy - PRESSURE_VOLUME_TO_EU * p * fluid.litersPerKg, fluid.enthalpy, fluid.entropy, region);
@@ -235,6 +246,8 @@ public final class PureFluid {
     }
 
     State solve(ChamberVolume volume, double mass, double specificTotalEnergy) {
+        if (this == HELIUM) return solveHelium(volume, mass, specificTotalEnergy, s -> specificTotalEnergy(volume, mass, s));
+        if (cubicModel() != null) return solve(volume, mass, specificTotalEnergy, s -> specificTotalEnergy(volume, mass, s));
         double pressure = volume.pressureForVolumeProduct(
             mass * liquidReferenceVolume * (liquidBulkModulus + referencePressure),
             liquidBulkModulus);
@@ -284,6 +297,8 @@ public final class PureFluid {
     }
 
     private State solveAtEntropy(ChamberVolume volume, double mass, double specificEntropy) {
+        if (this == HELIUM) return solveHelium(volume, mass, specificEntropy, State::specificEntropyEuPerKgKelvin);
+        if (cubicModel() != null) return solve(volume, mass, specificEntropy, State::specificEntropyEuPerKgKelvin);
         double liquidTemperature = referenceTemperature * Math.exp(specificEntropy / liquidHeatCapacity);
         State liquid = singlePhaseAtTemperature(volume, mass, liquidTemperature, 0.0, 0.0);
         if (liquid != null) {
@@ -358,12 +373,12 @@ public final class PureFluid {
                             - frozenAtMelting.specificEntropyEuPerKgKelvin())));
         }
         double lower = target < frozenValue ? minTemperature : meltingTemperature;
-        double upper = target < frozenValue ? meltingTemperature : this == WATER ? 500 : maxTemperature;
+        double upper = target < frozenValue ? meltingTemperature : crossover != null ? crossover.startK : maxTemperature;
         State lowerState = atTemperature(volume, mass, lower);
         State upperState = target < frozenValue ? frozenAtMelting : atTemperature(volume, mass, upper);
         double lowerValue = property.applyAsDouble(lowerState);
         double upperValue = property.applyAsDouble(upperState);
-        if (this == WATER && upper == 500 && target > upperValue) {
+        if (crossover != null && upper == crossover.startK && target > upperValue) {
             lower = upper;
             lowerValue = upperValue;
             upper = maxTemperature;
@@ -402,16 +417,35 @@ public final class PureFluid {
                 upperValue = value;
             }
         }
-        // A collapsed bracket across the dense-to-ideal switch need not contain a physical root
-        if (this != WATER && lower < criticalTemperature && upper >= criticalTemperature
-            && atTemperature(volume, mass, lower).vaporMassFraction() < 1) {
-            throw new UnsupportedStateException("Dense critical transition is outside the supported range");
-        }
         return checkPressure(atTemperature(volume, mass, lower + (upper - lower) * 0.5));
     }
 
+    private State solveHelium(ChamberVolume volume, double mass, double target, ToDoubleFunction<State> property) {
+        double lo = minTemperature, hi = maxTemperature;
+        State cold = atTemperature(volume, mass, lo), hot = atTemperature(volume, mass, hi);
+        double a = property.applyAsDouble(cold), b = property.applyAsDouble(hot);
+        if (target == a) return checkPressure(cold);
+        if (target == b) return checkPressure(hot);
+        if (!(a < target && target < b)) throw new UnsupportedStateException("Helium outside caloric bounds");
+        for (int i = 0; i < 80; i++) {
+            double f = (target - a) / (b - a);
+            double t = lo + (hi - lo) * (i % 4 == 3 ? 0.5 : Math.max(0.02, Math.min(0.98, f)));
+            State state = atTemperature(volume, mass, t);
+            double value = property.applyAsDouble(state);
+            if (Math.abs(value - target) <= 1e-11 * Math.max(1, Math.abs(target)) || t == lo || t == hi)
+                return checkPressure(state);
+            if (value < target) { lo = t; a = value; }
+            else { hi = t; b = value; }
+        }
+        throw new UnsupportedStateException("Helium caloric solve did not converge");
+    }
+
     private State checkPressure(State result) {
-        if (!Double.isFinite(result.pressurePa()) || result.pressurePa() <= 0.0 || result.pressurePa() > maxPressure) {
+        // Allow cold helium beyond ordinary pipe rupture and retain the wider warm, dilute operating range
+        double ceiling = this == HELIUM
+            ? Math.max(maxPressure, 2 * gasConstant * result.temperatureKelvin())
+            : maxPressure;
+        if (!Double.isFinite(result.pressurePa()) || result.pressurePa() <= 0.0 || result.pressurePa() > ceiling) {
             throw new UnsupportedStateException("Equilibrium pressure is outside the supported range");
         }
         return result;
@@ -428,8 +462,9 @@ public final class PureFluid {
     State idealExpansionOutlet(State inlet, double exhaustPa, double maximumRatio) {
         if (!inlet.canExpand() || inlet.pressurePa() <= exhaustPa) return null;
         double ratio = Math.min(maximumRatio, inlet.pressurePa() / exhaustPa);
-        if (this == WATER && inlet.temperatureKelvin() > 500) {
-            return waterAtPressureAndEntropy(inlet.pressurePa() / ratio, inlet.specificEntropyEuPerKgKelvin());
+        if (cubicModel() != null) return CubicIsotherm.isentropicOutlet(cubicModel(), inlet, inlet.pressurePa() / ratio);
+        if (crossover != null && inlet.temperatureKelvin() > crossover.startK) {
+            return atPressureAndEntropy(inlet.pressurePa() / ratio, inlet.specificEntropyEuPerKgKelvin());
         }
         double specificVolume = vaporSpecificVolume(inlet.temperatureKelvin(), inlet.pressurePa());
         double expandedVolume = specificVolume * Math.pow(ratio, 1 - gasConstant / vaporHeatCapacity);
@@ -439,12 +474,16 @@ public final class PureFluid {
 
     boolean wetStageExit(State idealOutlet, double actualEnthalpy) {
         // Inefficiency can keep a packet dry even if its isentropic endpoint is wet
-        return idealOutlet.denseRegion() == DenseRegion.NONE && idealOutlet.vaporMassFraction() < 1
-            && actualEnthalpy < vaporEnthalpy(idealOutlet.temperatureKelvin());
+        if (idealOutlet.denseRegion() != DenseRegion.NONE || idealOutlet.vaporMassFraction() == 1) return false;
+        if (cubicModel() != null) {
+            var line = cubicModel().at(idealOutlet.temperatureKelvin());
+            return actualEnthalpy < line.atVolume(line.vaporLitersPerKg()).specificEnthalpyEuPerKg();
+        }
+        return actualEnthalpy < vaporEnthalpy(idealOutlet.temperatureKelvin());
     }
 
-    private State waterAtPressureAndEntropy(double p, double entropy) {
-        double lo = Math.nextUp(500.0), hi = maxTemperature;
+    private State atPressureAndEntropy(double p, double entropy) {
+        double lo = Math.nextUp(crossover.startK), hi = maxTemperature;
         var line = new HotIsotherm(lo);
         if (entropy >= line.state(p, line.weight(p)).specificEntropyEuPerKgKelvin()) {
             line = new HotIsotherm(hi);
@@ -463,14 +502,14 @@ public final class PureFluid {
 
         // Outside coexistence, the cold branches have analytic entropy inverses
         double tl = referenceTemperature * Math.exp(entropy / liquidHeatCapacity);
-        if (tl >= meltingTemperature && tl <= 500 && p >= saturationPressure(tl))
+        if (tl >= meltingTemperature && tl <= crossover.startK && p >= saturationPressure(tl))
             return atTemperature(ChamberVolume.rigid(liquidVolume(p)), 1, tl);
         double tv = referenceTemperature * Math.exp((entropy - referenceLatentHeat / referenceTemperature
             + gasConstant * Math.log(p / referencePressure)) / vaporHeatCapacity);
-        if (tv >= meltingTemperature && tv <= 500 && p <= saturationPressure(tv))
+        if (tv >= meltingTemperature && tv <= crossover.startK && p <= saturationPressure(tv))
             return atTemperature(ChamberVolume.rigid(vaporSpecificVolume(tv, p)), 1, tv);
         lo = meltingTemperature;
-        hi = 500;
+        hi = crossover.startK;
         if (p < saturationPressure(lo) || p > saturationPressure(hi)) return null;
         for (int i = 0; i < 45; i++) {
             double t = (lo + hi) / 2;
@@ -484,7 +523,25 @@ public final class PureFluid {
         return atTemperature(ChamberVolume.rigid(liquidVolume(p) + quality * (vaporSpecificVolume(t, p) - liquidVolume(p))), 1, t);
     }
 
-    double vaporSpecificVolume(double temperature, double pressure) {
+    double phaseLitersPerKg(State state, boolean vapor) {
+        if (cubicModel() == null) return vapor ? vaporSpecificVolume(state.temperatureKelvin(), state.pressurePa()) : liquidVolume(state.pressurePa());
+        var phase = cubicPhase(state, vapor);
+        return (phase.specificEnthalpyEuPerKg() - phase.specificInternalEnergyEuPerKg())
+            / (PRESSURE_VOLUME_TO_EU * phase.pressurePa());
+    }
+
+    private State cubicPhase(State state, boolean vapor) {
+        if (state.isPureStream(vapor)) return state;
+        if ((vapor ? state.vaporMassFraction() : state.liquidMassFraction()) <= 0)
+            throw new UnsupportedStateException("Requested fluid phase is absent");
+        var line = cubicModel().at(state.temperatureKelvin());
+        // Compressed solid and liquid can coexist at melting without any vapor space
+        if (!vapor && state.vaporMassFraction() == 0 && state.solidMassFraction() > 0)
+            return line.atPressure(state.pressurePa(), false);
+        return line.atVolume(vapor ? line.vaporLitersPerKg() : line.liquidLitersPerKg());
+    }
+
+    private double vaporSpecificVolume(double temperature, double pressure) {
         return gasConstant * temperature / (PRESSURE_VOLUME_TO_EU * pressure);
     }
 
@@ -500,7 +557,9 @@ public final class PureFluid {
         }
         double entropy = initial.specificEntropyEuPerKgKelvin();
         double logT = Math.log(initial.temperatureKelvin() / referenceTemperature);
-        double entropyGap = switch (draw) {
+        boolean selectiveCubic = cubicModel() != null && (draw == ClosedFluidChamber.Draw.METERED_VAPOR || draw == ClosedFluidChamber.Draw.METERED_LIQUID);
+        boolean drawVapor = draw == ClosedFluidChamber.Draw.METERED_VAPOR;
+        double entropyGap = selectiveCubic ? entropy - cubicPhase(initial, drawVapor).specificEntropyEuPerKgKelvin() : switch (draw) {
             case METERED_VAPOR -> entropy - vaporEntropy(logT, initial.pressurePa());
             case METERED_LIQUID -> entropy - liquidHeatCapacity * logT;
             default -> 0;
@@ -509,6 +568,7 @@ public final class PureFluid {
             // A midpoint integral avoids subtracting nearly identical bulk energies for tiny packets
             double half = 0.5 * removedMassFraction;
             State midpoint = solveAtEntropy(volume, mass * (1 - half), entropy + entropyGap * half / (1 - half));
+            if (selectiveCubic) return cubicPhase(midpoint, drawVapor).specificEnthalpyEuPerKg();
             return switch (draw) {
                 case METERED_VAPOR -> vaporEnthalpy(midpoint.temperatureKelvin());
                 case METERED_LIQUID -> liquidHeatCapacity * (midpoint.temperatureKelvin() - referenceTemperature)
@@ -527,7 +587,7 @@ public final class PureFluid {
 
         private static final long serialVersionUID = 1L;
 
-        private UnsupportedStateException(String message) {
+        UnsupportedStateException(String message) {
             super(message);
         }
     }
@@ -557,14 +617,9 @@ public final class PureFluid {
     }
 
     private State atTemperature(ChamberVolume volume, double mass, double temperature, boolean solidCondensate) {
+        if (cubicModel() != null) return new CubicIsotherm(cubicModel(), temperature, solidCondensate).inChamber(volume, mass);
         solidCondensate &= fusionEnthalpy > 0;
-        if (this == WATER && temperature > 500) return new HotIsotherm(temperature).equilibrium(volume, mass);
-        if (temperature >= criticalTemperature) {
-            double p = volume.pressureForVolumeProduct(mass * gasConstant * temperature / PRESSURE_VOLUME_TO_EU, 0);
-            double h = vaporEnthalpy(temperature);
-            return new State(temperature, p, 1, 0, h - gasConstant * temperature, h,
-                vaporEntropy(Math.log(temperature / referenceTemperature), p));
-        }
+        if (temperature > crossover.startK) return new HotIsotherm(temperature).equilibrium(volume, mass);
         double pressure = saturationPressure(temperature);
         double specificVolume = volume.litersAtPressure(pressure) / mass;
         double liquidVolume = liquidVolume(pressure);
@@ -660,7 +715,7 @@ public final class PureFluid {
             return (vapor ? vaporMassFraction : liquidMassFraction()) == 1;
         }
 
-        boolean canExpand() {
+        public boolean canExpand() {
             return vaporMassFraction == 1 || denseRegion != DenseRegion.NONE;
         }
     }

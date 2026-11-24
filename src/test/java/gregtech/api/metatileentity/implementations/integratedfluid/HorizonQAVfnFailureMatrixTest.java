@@ -103,14 +103,14 @@ class HorizonQAVfnFailureMatrixTest {
         scenario.assertSingleNetwork(members, 3);
         scenario.assertSingleNetworkCapacity(members, 0, 0);
 
-        var blocked = injector.getNetwork().drainMachineChamber(working, 100, 0);
+        var blocked = injector.getNetwork().drainMachineChamber(working, 100, 0).remaining();
         assertEquals(working.massKg(), blocked.massKg());
         assertEquals(working.totalEnergyEu(), blocked.totalEnergyEu());
         assertEquals(0L, injector.getNetwork().getAmountQ());
         var pipe = scenario.pipe("receiver", 1000);
         scenario.connect(pipe, extractor);
         scenario.addNetworkFrom(pipe);
-        var retained = injector.getNetwork().drainMachineChamber(working, 100, 0);
+        var retained = injector.getNetwork().drainMachineChamber(working, 100, 0).remaining();
         long delivered = injector.getNetwork().getAmountQ();
         assertTrue(delivered > 0);
         assertEquals(1_000_000L, retained.massKg().movePointRight(6).longValueExact() + delivered);

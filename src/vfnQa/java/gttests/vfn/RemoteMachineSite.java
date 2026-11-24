@@ -31,11 +31,11 @@ record RemoteMachineSite(WorldServer world, int x, int y, int z) {
         int cx = (origin.x() >> 4) + offset, cz = (origin.z() >> 4) + offset;
         var site = new RemoteMachineSite(world, (cx << 4) + 8, 240, (cz << 4) + 8);
         world.theChunkProviderServer.loadChunk(cx, cz);
-        for (int dx = -1; dx <= 3; dx++) for (int dy = -1; dy <= topDy; dy++) for (int dz = -1; dz <= 2; dz++)
+        for (int dx = -1; dx <= 3; dx++) for (int dy = -1; dy <= topDy; dy++) for (int dz = -3; dz <= 2; dz++)
             helper.assertTrue(world.isAirBlock(site.x + dx, site.y + dy, site.z + dz), "Remote machine site is empty");
         helper.afterTest(() -> {
             world.theChunkProviderServer.loadChunk(cx, cz);
-            for (int dx = -1; dx <= 3; dx++) for (int dy = -1; dy <= topDy; dy++) for (int dz = -1; dz <= 2; dz++)
+            for (int dx = -1; dx <= 3; dx++) for (int dy = -1; dy <= topDy; dy++) for (int dz = -3; dz <= 2; dz++)
                 world.setBlockToAir(site.x + dx, site.y + dy, site.z + dz);
         });
         return site;
@@ -46,9 +46,13 @@ record RemoteMachineSite(WorldServer world, int x, int y, int z) {
     }
 
     void assignOwner() {
+        assignOwner(tile(0, 0, 0));
+    }
+
+    void assignOwner(IGregTechTileEntity controller) {
         var owner = net.minecraftforge.common.util.FakePlayerFactory.getMinecraft(world);
-        tile(0, 0, 0).setOwnerUuid(owner.getUniqueID());
-        tile(0, 0, 0).setOwnerName(owner.getCommandSenderName());
+        controller.setOwnerUuid(owner.getUniqueID());
+        controller.setOwnerName(owner.getCommandSenderName());
     }
 
     void requestUnload() {

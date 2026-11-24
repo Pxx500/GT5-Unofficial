@@ -31,6 +31,127 @@ import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegrated
 @GameTestHolder(value = Mods.ModIDs.GREG_TECH, templatePrefix = "vfn", clientOnly = true)
 public final class InjectorViewTests {
 
+    @GameTest(template = "radiator", timeoutTicks = 650)
+    public static void inspectDiluteOxygenIntake(GameTestHelper h) {
+        var rig = HeatPumpTests.placeDiluteOxygen(h);
+        var tile = rig.pump().getBaseMetaTileEntity();
+        var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+        var p = h.absolute("controller");
+        var reason = gregtech.api.recipe.check.SimpleCheckRecipeResult.ofFailure("vfn_inlet_portion");
+        ClientTest.scenario(h).awaitServer("inlet and power hatch ready", () -> h.assertTrue(tile.getTimer() >= 20
+            && rig.input().getNetwork() != null && rig.supply().inputEnergyFrom(ForgeDirection.NORTH), "Both GT inputs active"))
+            .server("run the dilute feed", () -> {
+                player.playerNetServerHandler.setPlayerLocation(p.x()+0.5, p.y()-1, p.z()-2.5, 0, 0);
+                tile.setOwnerUuid(player.getUniqueID());
+                tile.setOwnerName(player.getCommandSenderName());
+                HeatPumpTests.startDiluteOxygen(h, rig);
+            }).withinTicks(320).awaitServer("refused metered stroke", () -> h.assertEquals(reason, rig.pump().getCheckRecipeResult(), "Not enough gas"))
+            .server("inspect the controller", () -> rig.pump().onRightclick(tile, player))
+            .awaitClient("synchronized intake warning", c -> {
+                var mc = Minecraft.getMinecraft();
+                if (!(mc.currentScreen instanceof net.minecraft.client.gui.inventory.GuiContainer)
+                    || !(mc.theWorld.getTileEntity(p.x(),p.y(),p.z()) instanceof IGregTechTileEntity client)
+                    || !(client.getMetaTileEntity() instanceof MTEHeatPump pump) || !reason.equals(pump.getCheckRecipeResult())
+                    || pump.getOperatingMode() != HeatPumpMode.TARGET_ENERGY || pump.getUniversalValue() != 128
+                    || !net.minecraft.util.StatCollector.canTranslate("GT5U.gui.text.recipe_result.vfn_inlet_portion"))
+                    throw new AssertionError("Waiting for the intake warning");
+            }).capture("insufficient-oxygen-intake").server("close the panel", player::closeScreen).succeed();
+    }
+
+    @GameTest(template = "water_line", timeoutTicks = 650)
+    public static void inspectCopperRadiatorFin(GameTestHelper h) {
+        var machines = RadiatorTests.placeMatched(h);
+        var p = h.absolute("controller");
+        var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+        ClientTest.scenario(h).awaitServer("both inlets connected", () -> h.assertTrue(machines.bare().inlet().getNetwork() != null
+            && machines.finned().inlet().getNetwork() != null, "Separate test charges ready"))
+            .server("run matched radiator batches", () -> {
+                machines.start(h);
+                h.getWorld().setBlock(p.x()+4, p.y()+2, p.z()-5, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(p.x()+4.5, p.y()+3, p.z()-4.5, 30, 24);
+            }).withinTicks(400).awaitServer("extra heat removed by copper fin", () -> machines.checkFinished(h))
+            .awaitClient("visible copper exchanger", c -> {
+                var world = Minecraft.getMinecraft().theWorld;
+                if (!(world.getBlock(p.x()+4, p.y()+2, p.z()+1) instanceof gregtech.common.blocks.BlockRadiatorModule))
+                    throw new AssertionError("Waiting for the radiator modules");
+            }).capture("matched-radiators-copper-fin").succeed();
+    }
+
+    @GameTest(template = "return_plant", timeoutTicks = 650)
+    public static void inspectCondensateReturnPlant(GameTestHelper h) {
+        var loop = VaporOutletTests.placeReturnLoop(h);
+        var rig = loop.plant().rig();
+        var p = h.absolute("source");
+        var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+        boolean[] started = new boolean[1];
+        h.onEachTick("power the operating loop", () -> { if (started[0]) loop.powerHeaters(); });
+        ClientTest.scenario(h).awaitServer("three connected circuits", () -> loop.ready(h))
+            .server("start the wet boiler at temperature", () -> {
+                loop.primeWarm();
+                started[0] = true;
+                h.getWorld().setBlock(p.x() + 5, p.y() + 1, p.z() - 3, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(p.x() + 5.5, p.y() + 2, p.z() - 2.5, 49, 17);
+            }).withinTicks(360).awaitServer("steam delivered electrical work", () -> h.assertTrue(rig.load().getStoredEU() >= 128, "MV load powered"))
+            .awaitClient("pump and turbine rendered in the same installation", c -> {
+                var world = Minecraft.getMinecraft().theWorld;
+                if (!(world.getTileEntity(p.x()+1, p.y()+3, p.z()) instanceof IGregTechTileEntity pump) || pump.getMetaTileID() != 5779
+                    || !(world.getTileEntity(p.x()+1, p.y(), p.z()) instanceof IGregTechTileEntity turbine) || turbine.getMetaTileID() != 5777)
+                    throw new AssertionError("Waiting for both controllers");
+            }).capture("steam-plant-return-pump").succeed();
+    }
+
+    @GameTest(template = "condensing_plant", timeoutTicks = 9900)
+    public static void configureColdCondensateReturn(GameTestHelper h) {
+        var installation = VaporOutletTests.placeCondensingPlant(h);
+        var loop = installation.loop();
+        var controller = (gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump)loop.pump().getMetaTileEntity();
+        var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+        var p = h.absolute("source");
+        boolean[] started = new boolean[1];
+        h.onEachTick("power the plant after commissioning", () -> {
+            if (!started[0]) return;
+            installation.powerBoiler();
+            if (loop.power().getEUCapacity() - loop.power().getStoredEU() >= 128) loop.power().injectEnergyUnits(ForgeDirection.NORTH, 128, 1);
+        });
+        var setup = ClientTest.scenario(h).awaitServer("condensing plant formed", () -> installation.ready(h))
+            .server("stand beside the return pump", () -> {
+                installation.fill(h);
+                h.getWorld().setBlock(p.x()+2, p.y()+2, p.z()-3, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(p.x()+2.5, p.y()+3, p.z()-2.5, 22, 23);
+                loop.pump().setOwnerUuid(player.getUniqueID());
+                loop.pump().setOwnerName(player.getCommandSenderName());
+            }).awaitClient("return pump visible", c -> {
+                if (!(Minecraft.getMinecraft().theWorld.getTileEntity(p.x()+1, p.y()+3, p.z()) instanceof IGregTechTileEntity t)
+                    || t.getMetaTileID() != 5779) throw new AssertionError("Waiting for return pump");
+            }).server("open return pump", () -> controller.onRightclick(loop.pump(), player))
+            .click(panelControl(null, "pumpSettingsButton"))
+            .click(panelControl("pumpSettings", "pumpMode"))
+            .awaitServer("differential mode", () -> h.assertEquals(1, controller.mode().ordinal(), "Pressure rise selected"))
+            .click(panelControl("pumpSettings", "pumpMode"))
+            .awaitServer("flow mode", () -> h.assertEquals(2, controller.mode().ordinal(), "Volume selected"))
+            .click(panelControl("pumpSettings", "pumpTarget")).key(Keyboard.KEY_END, '\0');
+        for (int i = 0; i < 5; i++) setup.key(Keyboard.KEY_BACK, '\b');
+        setup.key(Keyboard.KEY_2, '2').key(Keyboard.KEY_RETURN, '\r')
+            .awaitServer("two-liter stroke", () -> h.assertEquals(2, controller.target(), "2 L per stroke"))
+            .capture("condensate-pump-setting")
+            .server("close settings and energize plant", () -> {
+                player.closeScreen();
+                int x = p.x()+15, y = p.y()+10, z = p.z()+15;
+                h.assertTrue(h.getWorld().isAirBlock(x, y, z), "Free overview position");
+                h.afterTest(() -> h.getWorld().setBlockToAir(x, y, z));
+                h.getWorld().setBlock(x, y, z, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(x+0.5, y+1, z+0.5, 119, 33);
+                started[0] = true;
+            }).awaitClient("both ends of the condenser rendered", c -> {
+                var mc = Minecraft.getMinecraft();
+                if (Math.abs(mc.thePlayer.posX - (p.x()+15.5)) > 0.1 || mc.currentScreen != null
+                    || !(mc.theWorld.getTileEntity(p.x()+3,p.y(),p.z()+20) instanceof IGregTechTileEntity last) || last.getMetaTileID() != 5775)
+                    throw new AssertionError("Waiting for condenser and overview");
+            }).capture("condensing-plant")
+            .withinTicks(9000).awaitServer("EV delivery after GUI setup", () -> h.assertTrue(loop.plant().rig().load().getStoredEU() >= 2048,
+                "First electricity delivered after startup")).succeed();
+    }
+
     @GameTest(template = "radiator", timeoutTicks = 4000)
     public static void compareSteamLoopsAcrossDimensions(GameTestHelper helper) {
         if (DimensionManager.getWorld(-1) == null) DimensionManager.initDimension(-1);
@@ -38,7 +159,7 @@ public final class InjectorViewTests {
         var trials = new VaporOutletTests.ReservoirTrial[2];
         var sites = new RemoteMachineSite[2];
         for (int i = 0; i < worlds.length; i++) {
-            var site = sites[i] = RemoteMachineSite.reserve(helper, worlds[i], 49, 1);
+            var site = sites[i] = RemoteMachineSite.reserve(helper, worlds[i], 49, 4);
             site.reloadForObservation(helper);
             trials[i] = new VaporOutletTests.ReservoirTrial(helper, site);
         }
@@ -768,24 +889,35 @@ public final class InjectorViewTests {
             .succeed();
     }
 
-    @GameTest(template = "regulator", timeoutTicks = 1500)
+    @GameTest(template = "turbine", timeoutTicks = 10000)
     public static void vaporOutletUnderLoad(GameTestHelper helper) {
-        var plant = VaporOutletTests.place(helper);
+        var start = VaporOutletTests.coldStart(helper);
+        var plant = start.plant();
+        var powered = new boolean[1];
         var p = helper.absolute("source");
-        helper.getWorld().setBlock(p.x() - 2, p.y(), p.z() + 2, net.minecraft.init.Blocks.stonebrick);
-        helper.onEachTick("power the feedwater boiler", () -> plant.boiler().injectEnergyUnits(ForgeDirection.EAST, 128, 1));
+        helper.getWorld().setBlock(p.x() - 3, p.y() - 1, p.z() + 1, net.minecraft.init.Blocks.stonebrick);
+        helper.getWorld().setBlock(p.x() + 5, p.y() + 2, p.z() - 6, net.minecraft.init.Blocks.stonebrick);
+        helper.onEachTick("power the drum and steam line", () -> {
+            if (powered[0]) {
+                start.powerDrum();
+                start.powerReheater();
+            }
+        });
         ClientTest.scenario(helper)
-            .server("inspect the vapor outlet from above the feedwater line", () -> {
+            .server("inspect the vapor outlet beside the feedwater line", () -> {
                 var viewer = (EntityPlayerMP) helper.getWorld().playerEntities.get(0);
-                viewer.playerNetServerHandler.setPlayerLocation(p.x() - 1.5, p.y() + 1, p.z() + 2.7, -121f, 42.3f);
+                viewer.playerNetServerHandler.setPlayerLocation(p.x() - 2.5, p.y(), p.z() + 1.5, -90f, 20.5f);
             })
             .awaitServer("three chambers formed", () -> plant.ready(helper))
-            .server("fill the feedwater line", () -> plant.fill(helper))
-            .withinTicks(1000)
-            .awaitServer("MV generated while water is still boiling", () -> {
-                helper.assertTrue(plant.rig().load().getStoredEU() >= 128 && plant.feed().getNetwork().getQuality() < 0.1,
-                    "Liquid remains upstream of a working turbine");
+            .server("charge the cold drum and enable heat", () -> {
+                start.fill(helper);
+                powered[0] = true;
             })
+            .withinTicks(9300)
+            .awaitServer("HV generated while water is still boiling", () ->
+                helper.assertTrue(plant.rig().load().getStoredEU() >= 512 && plant.feed().getNetwork().getQuality() < 0.1,
+                    "Liquid remains upstream of a working turbine"))
+            .withinTicks(350)
             .awaitClient("read the vapor draw", c -> {
                 var hit = Minecraft.getMinecraft().objectMouseOver;
                 var tag = mcp.mobius.waila.api.impl.DataAccessorCommon.instance.getNBTData();
@@ -793,27 +925,43 @@ public final class InjectorViewTests {
                     || tag.getDouble("vaporGramsPerTick") <= 0) throw new AssertionError("Waiting for measured vapor flow");
             })
             .capture("vapor-outlet")
+            .server("view the boiler and turbine together", () -> {
+                var viewer = (EntityPlayerMP) helper.getWorld().playerEntities.get(0);
+                viewer.playerNetServerHandler.setPlayerLocation(p.x() + 5.5, p.y() + 3, p.z() - 5.5, 45f, 28f);
+            })
+            .awaitClient("overview position received", c -> {
+                var viewer = Minecraft.getMinecraft().thePlayer;
+                if (Math.abs(viewer.posX - (p.x() + 5.5)) > 0.1) throw new AssertionError("Waiting for overview");
+            })
+            .capture("cold-water-plant")
             .succeed();
     }
 
-    @GameTest(template = "regulator", timeoutTicks = 400)
+    @GameTest(template = "turbine", timeoutTicks = 600)
     public static void steamTurbineUnderLoad(GameTestHelper helper) {
         var rig = TurbineTests.place(helper);
-        var viewer = helper.absolute("viewer");
-        var target = helper.absolute("valve");
+        TurbineTests.installDiluteSteamRotor(rig.turbine());
+        var tile = rig.turbine();
         ClientTest.scenario(helper)
             .server("inspect the loaded turbine", () -> {
                 var player = (EntityPlayerMP) helper.getWorld().playerEntities.get(0);
-                player.playerNetServerHandler.setPlayerLocation(viewer.x() - 1.0, viewer.y(), viewer.z() + 0.5, -26.5f, 18);
+                int x = tile.getXCoord(), y = tile.getYCoord(), z = tile.getZCoord();
+                helper.getWorld().setBlock(x + 1, y, z - 3, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(x + 1.5, y + 1, z - 2.5, 18.4f, 34);
             })
             .awaitServer("isolated steam and exhaust pipes", () -> rig.steam().ready(helper))
-            .server("supply dry steam", () -> helper.assertEquals(6,
-                rig.steam().hot().fill(FluidRegistry.getFluidStack("steam", 6), true), "Standard steam accepted"))
-            .awaitServer("energy hatch received power", () -> helper.assertTrue(rig.load().getStoredEU() >= 128, "MV delivered"))
+            .server("charge both sides for the MV dynamo", () -> {
+                helper.assertEquals(200, rig.steam().cold().fill(FluidRegistry.getFluidStack("steam", 200), true), "Exhaust primed");
+                helper.assertEquals(600, rig.steam().hot().fill(FluidRegistry.getFluidStack("steam", 600), true), "Steam admitted");
+            })
+            .withinTicks(300)
+            .awaitServer("energy hatch received power", () -> helper.assertTrue(rig.load().getStoredEU() >= 128, "MV delivered: "
+                + ((gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidSteamTurbine) tile.getMetaTileEntity()).getCheckRecipeResult().getDisplayString()
+                + ", dynamo " + rig.dynamo().getStoredEU() + " EU"))
             .awaitClient("read the working turbine", c -> {
                 var hit = Minecraft.getMinecraft().objectMouseOver;
                 var tag = mcp.mobius.waila.api.impl.DataAccessorCommon.instance.getNBTData();
-                if (hit == null || hit.blockX != target.x() || hit.blockY != target.y() || hit.blockZ != target.z()
+                if (hit == null || hit.blockX != tile.getXCoord() || hit.blockY != tile.getYCoord() || hit.blockZ != tile.getZCoord()
                     || tag.getDouble("shaftEuPerTick") <= 0 || !tag.hasKey("vfnLastWetExpansion"))
                     throw new AssertionError("Waiting for shaft power and measured expansion");
             })
@@ -821,46 +969,107 @@ public final class InjectorViewTests {
             .succeed();
     }
 
-    @GameTest(template = "regulator", timeoutTicks = 400)
+    @GameTest(template = "radiator", timeoutTicks = 700)
+    public static void inspectReinforcedPumpDischarge(GameTestHelper h) {
+        var plant = PressureLineTests.placeDensePump(h);
+        var p = h.absolute("controller");
+        var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+        boolean[] running = new boolean[1];
+        h.onEachTick("power the dense return", () -> {
+            if (running[0] && plant.rig().supply().getStoredEU() < 122880)
+                plant.rig().supply().injectEnergyUnits(ForgeDirection.NORTH, 2048, 1);
+        });
+        ClientTest.scenario(h).awaitServer("rated pump formed", () -> plant.ready(h))
+            .server("start the dense return and view the discharge hatch", () -> {
+                plant.start();
+                running[0] = true;
+                h.getWorld().setBlock(p.x()+3, p.y(), p.z(), net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(p.x()+3.5, p.y()+1, p.z()+0.5, 68.2f, 47.6f);
+            }).withinTicks(500).awaitServer("one kilogram reached the high side", () ->
+                h.assertEquals(26_788_852L, plant.high().getNetwork().getAmountQ(), "Whole dense return"))
+            .awaitClient("read the operating pressure and wall rating", c -> {
+                var hit = Minecraft.getMinecraft().objectMouseOver;
+                var tag = mcp.mobius.waila.api.impl.DataAccessorCommon.instance.getNBTData();
+                if (hit == null || hit.blockX != p.x()+1 || hit.blockY != p.y() || hit.blockZ != p.z()+1
+                    || tag.getFloat("maxPressureBar") != 350 || tag.getFloat("pressure") <= 330)
+                    throw new AssertionError("Waiting for the reinforced discharge hatch");
+            }).capture("reinforced-discharge").succeed();
+    }
+
+    @GameTest(template = "radiator", timeoutTicks = 500)
     public static void inspectDenseTurbineUnderLoad(GameTestHelper h) {
         var rig = PressureLineTests.turbine(h);
-        var viewer = h.absolute("viewer");
-        var target = h.absolute("valve");
+        var target = h.absolute("controller");
         ClientTest.scenario(h).awaitServer("two separate rated pipes", () -> rig.ready(h))
-            .server("start dense expansion", () -> {
+            .server("face the turbine controller", () -> {
                 var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
-                player.playerNetServerHandler.setPlayerLocation(viewer.x() - 1, viewer.y(), viewer.z() + 0.5, -26.5f, 18);
-                rig.charge(h);
-            }).awaitServer("load powered", () -> h.assertTrue(rig.load().getStoredEU() >= 128, "Delivered MV power"))
-            .awaitClient("read operating rotor", c -> {
+                h.getWorld().setBlock(target.x()+2, target.y()+1, target.z()-3, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(target.x()+2.5, target.y()+2, target.z()-2.5, 38.6f, 44.3f);
+            }).awaitClient("turbine controller in view", c -> {
+                var hit = Minecraft.getMinecraft().objectMouseOver;
+                if (hit == null || hit.blockX != target.x() || hit.blockY != target.y() || hit.blockZ != target.z())
+                    throw new AssertionError("Waiting for the front face");
+            }).server("start dense expansion", () -> rig.charge(h))
+            .withinTicks(360).awaitClient("read operating rotor", c -> {
                 var mc = Minecraft.getMinecraft();
                 var hit = mc.objectMouseOver;
                 var data = mcp.mobius.waila.api.impl.DataAccessorCommon.instance.getNBTData();
-                if (hit == null || hit.blockX != target.x() || hit.blockY != target.y() || hit.blockZ != target.z()
+                if (data == null || hit == null || hit.blockX != target.x() || hit.blockY != target.y() || hit.blockZ != target.z()
                     || data.getDouble("shaftEuPerTick") <= 0 || !data.hasKey("vfnLastWetExpansion") || data.getBoolean("vfnLastWetExpansion"))
                     throw new AssertionError("Waiting for dry expansion under load");
-                var pipe = mc.theWorld.getTileEntity(target.x() - 1, target.y(), target.z());
+                var pipe = mc.theWorld.getTileEntity(target.x() - 2, target.y(), target.z()+1);
                 if (!(pipe instanceof gregtech.api.metatileentity.BaseMetaPipeEntity gt) || (gt.mConnections & ForgeDirection.EAST.flag) == 0)
                     throw new AssertionError("Waiting for the pressure pipe connection");
-            }).capture("dense-expansion-under-load").succeed();
+            }).capture("dense-expansion-under-load")
+            .awaitServer("load powered through three transformers", () -> h.assertTrue(rig.load().getStoredEU() >= 1024, "Delivered MV power"))
+            .succeed();
     }
 
-    @GameTest(template = "regulator", timeoutTicks = 600)
+    @GameTest(template = "water_line", timeoutTicks = 700)
+    public static void inspectTurbinePoweredFeedPump(GameTestHelper h) {
+        var loop = PressureLineTests.denseLoop(h);
+        var p = h.absolute("controller");
+        long[] hotMass = new long[1];
+        ClientTest.scenario(h).awaitServer("both multiblocks formed", () -> loop.ready(h))
+            .server("start loaded turbine without external electricity", () -> {
+                h.getWorld().setBlock(p.x()+5, p.y()+3, p.z()+4, net.minecraft.init.Blocks.stonebrick);
+                var player = (EntityPlayerMP)h.getWorld().playerEntities.get(0);
+                player.playerNetServerHandler.setPlayerLocation(p.x()+5.5, p.y()+4, p.z()+4.5, 132, 36);
+                loop.startExpansion();
+            }).withinTicks(480).awaitServer("pump receives turbine electricity", () -> h.assertTrue(loop.power().getStoredEU() >= 98304,
+                "At least three complete LuV packets"))
+            .server("return dense water on stored shaft power", () -> {
+                loop.turbine().controller().disableWorking();
+                hotMass[0] = loop.hot().getNetwork().getAmountQ();
+                loop.pump().enableWorking();
+            }).awaitServer("dense return completed", () -> h.assertEquals(hotMass[0] + 1_000_000, loop.hot().getNetwork().getAmountQ(),
+                "One kilogram back in the hot vessel"))
+            .awaitClient("linked machines visible", c -> {
+                var mc = Minecraft.getMinecraft();
+                if (Math.abs(mc.thePlayer.posX - (p.x()+5.5)) > 0.1
+                    || !(mc.theWorld.getTileEntity(p.x(),p.y(),p.z()+2) instanceof IGregTechTileEntity a) || a.getMetaTileID() != 5777
+                    || !(mc.theWorld.getTileEntity(p.x(),p.y(),p.z()-3) instanceof IGregTechTileEntity b)
+                    || b.getMetaTileID() != gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump.HIGH_PRESSURE_ID)
+                    throw new AssertionError("Waiting for turbine and return pump");
+            }).capture("turbine-powered-dense-return").succeed();
+    }
+
+    @GameTest(template = "water_line", timeoutTicks = 7200)
     public static void inspectDenseGenerationPlant(GameTestHelper h) {
         var rig = new DensePlantTests.GovernedPlant(h);
         var plant = rig.plant;
-        var p = h.absolute("valve");
-        ClientTest.scenario(h).awaitServer("two primed circuits", () -> plant.ready(h))
+        var p = h.absolute("controller");
+        ClientTest.scenario(h).withinTicks(240).awaitServer("two primed circuits", () -> plant.ready(h))
             .server("start the plant and frame both loops", () -> {
-                h.getWorld().setBlock(p.x() + 3, p.y() + 3, p.z() + 4, net.minecraft.init.Blocks.stonebrick);
+                h.getWorld().setBlock(p.x() + 5, p.y() + 3, p.z() + 4, net.minecraft.init.Blocks.stonebrick);
                 var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
-                player.playerNetServerHandler.setPlayerLocation(p.x() + 3.5, p.y() + 4, p.z() + 4.5, 143, 45);
+                player.playerNetServerHandler.setPlayerLocation(p.x() + 5.5, p.y() + 4, p.z() + 4.5, 132, 35);
                 plant.start(h);
-            }).awaitServer("covered machines powering the load", () -> h.assertTrue(rig.consumed >= 512 && plant.pumpingTicks >= 40
-                && rig.sample().heat() > 0, "Paid heat, return strokes and external output"))
+            }).withinTicks(6800).awaitServer("external power after pump reserve recovery", () -> h.assertTrue(rig.reopened
+                && plant.loadEu() >= rig.loadAtReopen + 2048 && plant.pumpStrokes >= 2, "Reserve restored, external export resumed"))
             .awaitClient("pump, turbine and pressure lines are visible", c -> {
                 var mc = Minecraft.getMinecraft();
-                if (mc.thePlayer.posY < p.y() + 3.5 || !(mc.theWorld.getTileEntity(p.x() - 1, p.y(), p.z()) instanceof gregtech.api.metatileentity.BaseMetaPipeEntity pipe)
+                if (mc.thePlayer.posY < p.y() + 3.5 || !(mc.theWorld.getTileEntity(p.x() - 2, p.y(), p.z()) instanceof gregtech.api.metatileentity.BaseMetaPipeEntity pipe)
                     || (pipe.mConnections & ForgeDirection.NORTH.flag) == 0) throw new AssertionError("Waiting for connected plant");
             }).capture("dense-generation-plant").succeed();
     }
@@ -992,97 +1201,131 @@ public final class InjectorViewTests {
             .succeed();
     }
 
-    @GameTest(template = "regulator", timeoutTicks = 600)
+    @GameTest(template = "radiator", timeoutTicks = 900)
     public static void exchangeTurbineRotorInGui(GameTestHelper helper) {
-        var rig = TurbineTests.place(helper);
-        var tile = rig.turbine();
-        var p = helper.absolute("valve");
+        var p = helper.absolute("controller");
+        var rig = HeatPumpTests.placeSteelShell(helper.getWorld(), p.x(), p.y(), p.z(), (short) 5777, (short) 33);
+        var feed = (MTEIntegratedFluidInjectorHatch) InjectorTests.placeAt(helper.getWorld(), p.x() - 2, p.y(), p.z() + 1,
+            (short) 5773, ForgeDirection.EAST).getMetaTileEntity();
+        var tile = rig.controller();
+        var turbine = (gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidSteamTurbine) tile.getMetaTileEntity();
+        TurbineTests.installDiluteSteamRotor(tile);
         var player = (EntityPlayerMP) helper.getWorld().playerEntities.get(0);
-        var installed = tile.getStackInSlot(0).copy();
-        var slot = ClientTarget.of("turbine rotor", window -> {
-            if (!(Minecraft.getMinecraft().currentScreen instanceof com.gtnewhorizons.modularui.common.internal.wrapper.ModularGui gui)) return null;
-            for (var w : gui.getContext().getMainWindow().getChildren()) {
-                if (w instanceof com.gtnewhorizons.modularui.common.widget.SlotWidget && w.getPos().x == 79 && w.getPos().y == 31)
-                    return new ClickTarget(w, w.getRenderAbsoluteRectangle(), w::isHovering);
+        var installed = turbine.getControllerSlot().copy();
+        int[] rotorSlot = { -1 };
+        var slot = ClientTarget.of("installed turbine rotor", window -> {
+            if (!(Minecraft.getMinecraft().currentScreen instanceof GuiContainerWrapper gui)) return null;
+            var panels = gui.getScreen().getPanelManager();
+            var widgets = new java.util.ArrayDeque<com.cleanroommc.modularui.api.widget.IWidget>();
+            widgets.add(panels.getMainPanel());
+            while (!widgets.isEmpty()) {
+                var w = widgets.remove();
+                if (w instanceof com.cleanroommc.modularui.widgets.slot.ItemSlot item) {
+                    var gtSlot = item.getSlot();
+                    if (rotorSlot[0] < 0 && net.minecraft.item.ItemStack.areItemStacksEqual(gtSlot.getStack(), installed))
+                        rotorSlot[0] = gtSlot.slotNumber;
+                    if (rotorSlot[0] >= 0 && gtSlot.slotNumber == rotorSlot[0]) {
+                        var a = item.getArea();
+                        return new ClickTarget(item, new java.awt.Rectangle(a.x, a.y, a.width, a.height), () -> panels.isBelowMouseInTopPanel(item));
+                    }
+                }
+                widgets.addAll(w.getChildren());
             }
             return null;
         });
         ClientTest.scenario(helper).server("stand beside the rotor housing", () -> {
-            player.playerNetServerHandler.setPlayerLocation(p.x() + 0.5, p.y(), p.z() - 1.5, 0, 28);
+            helper.getWorld().setBlock(p.x() + 3, p.y() + 1, p.z() - 4, net.minecraft.init.Blocks.stonebrick);
+            player.playerNetServerHandler.setPlayerLocation(p.x() + 3.5, p.y() + 2, p.z() - 3.5, 38, 29);
             player.inventory.currentItem = 8;
             tile.setOwnerUuid(player.getUniqueID());
             tile.setOwnerName(player.getCommandSenderName());
         }).awaitServer("turbine connected", () -> {
-            rig.steam().ready(helper);
+            helper.assertTrue(turbine.checkStructure(true, tile), "Turbine structure formed");
             helper.assertTrue(tile.getTimer() > 5, "GT tile initialized");
         }).awaitClient("rotor housing present on client", c -> {
             var found = Minecraft.getMinecraft().theWorld.getTileEntity(p.x(), p.y(), p.z());
             if (!(found instanceof IGregTechTileEntity gt) || gt.getMetaTileID() != 5777 || gt.getMetaTileEntity() == null)
                 throw new AssertionError("Waiting for the turbine tile");
         })
+            .capture("formed-steam-turbine")
             .server("open the rotor slot", () -> helper.assertTrue(((gregtech.api.metatileentity.BaseMetaTileEntity) tile)
                 .onRightclick(player, ForgeDirection.NORTH, 0.5f, 0.5f, 0), "Rotor housing opens without a tool"))
-            .click(slot).awaitServer("rotor removed by player", () -> helper.assertTrue(tile.getStackInSlot(0) == null
+            .click(slot).awaitServer("rotor removed by player", () -> helper.assertTrue(turbine.getControllerSlot() == null
                 && net.minecraft.item.ItemStack.areItemStacksEqual(installed, player.inventory.getItemStack()), "Rotor on cursor"))
             .awaitClient("player holds the removed rotor", c -> {
                 var held = Minecraft.getMinecraft().thePlayer.inventory.getItemStack();
                 if (!net.minecraft.item.ItemStack.areItemStacksEqual(installed, held)) throw new AssertionError("Rotor not on client cursor");
             }).rightClick(slot).awaitServer("rotor reinstalled", () -> helper.assertTrue(player.inventory.getItemStack() == null
-                && net.minecraft.item.ItemStack.areItemStacksEqual(installed, tile.getStackInSlot(0)),
-                "Same rotor and durability: slot=" + tile.getStackInSlot(0) + ", cursor=" + player.inventory.getItemStack()))
-            .capture("installed-steel-rotor").server("close rotor housing", player::closeScreen).succeed();
+                && net.minecraft.item.ItemStack.areItemStacksEqual(installed, turbine.getControllerSlot()),
+                "Same rotor and durability: slot=" + turbine.getControllerSlot() + ", cursor=" + player.inventory.getItemStack()))
+            .click(panelControl(null, "turbineSettingsButton"))
+            .click(panelControl("turbineSettings", "admission")).key(Keyboard.KEY_END, '\0')
+            .key(Keyboard.KEY_BACK, '\b').key(Keyboard.KEY_BACK, '\b').key(Keyboard.KEY_BACK, '\b')
+            .key(Keyboard.KEY_7, '7').key(Keyboard.KEY_5, '5').key(Keyboard.KEY_RETURN, '\r')
+            .click(panelControl("turbineSettings", "inletFloor")).key(Keyboard.KEY_END, '\0').key(Keyboard.KEY_BACK, '\b')
+            .key(Keyboard.KEY_5, '5').key(Keyboard.KEY_0, '0').key(Keyboard.KEY_RETURN, '\r')
+            .awaitServer("controls submitted", () -> {
+                helper.assertEquals(75, turbine.admissionPercent(), "75 percent admission");
+                helper.assertEquals(50, turbine.minimumInletCbar(), "Half bar inlet start");
+            }).server("charge the inlet at the selected opening", () -> {
+                turbine.fixAllIssues();
+                helper.assertEquals(600, feed.fill(FluidRegistry.getFluidStack("steam", 600), true), "Live GT steam inlet");
+                tile.enableWorking();
+            }).withinTicks(300).awaitServer("operating limit under the selected throttle", () -> {
+                helper.assertEquals(gregtech.api.recipe.check.SimpleCheckRecipeResult.ofFailure("vfn_turbine_small_intake"), turbine.getCheckRecipeResult(), "75% stroke cannot hold one portion");
+                helper.assertTrue(turbine.inletBar() > 0.8f && turbine.outletBar() == 0, "Separate pressure readings");
+            }).awaitClient("terminal reports the admission limit", c -> {
+                var clientTile = (IGregTechTileEntity) Minecraft.getMinecraft().theWorld.getTileEntity(p.x(), p.y(), p.z());
+                var clientMulti = (gregtech.api.metatileentity.implementations.MTEMultiBlockBase) clientTile.getMetaTileEntity();
+                if (!gregtech.api.recipe.check.SimpleCheckRecipeResult.ofFailure("vfn_turbine_small_intake").equals(clientMulti.getCheckRecipeResult()))
+                    throw new AssertionError("Waiting for the server's intake diagnosis");
+                var opening = net.minecraft.util.StatCollector.translateToLocalFormatted("GT5U.vfn.turbine.opening");
+                if (opening.startsWith("Format error") || opening.equals("GT5U.vfn.turbine.opening"))
+                    throw new AssertionError("Missing admission label: " + opening);
+            }).capture("turbine-admission").server("close turbine panel", player::closeScreen).succeed();
     }
 
-    @GameTest(template = "regulator", timeoutTicks = 600)
-    public static void configureCondensateReturn(GameTestHelper helper) {
-        var loop = VaporOutletTests.placeReturnLoop(helper);
-        var tile = loop.pump();
-        var world = helper.getWorld();
-        var player = (EntityPlayerMP) world.playerEntities.get(0);
-        var pos = helper.absolute("source");
-        var saved = (java.util.function.Supplier<net.minecraft.nbt.NBTTagCompound>) () -> {
-            var tag = new net.minecraft.nbt.NBTTagCompound();
-            tile.getMetaTileEntity().saveNBTData(tag);
-            return tag;
-        };
-        var cycle = legacyWidget(com.gtnewhorizons.modularui.common.widget.CycleButtonWidget.class);
-        var value = legacyWidget(com.gtnewhorizons.modularui.common.widget.textfield.NumericWidget.class);
-        var controls = ClientTest.scenario(helper).awaitServer("closed return path", () -> loop.ready(helper))
-            .server("view the return pipe and boiler", () -> {
-                world.setBlock(pos.x() + 4, pos.y() + 2, pos.z() + 4, net.minecraft.init.Blocks.stonebrick);
-                player.playerNetServerHandler.setPlayerLocation(pos.x() + 4.5, pos.y() + 3, pos.z() + 4.5, 132, 38);
+    @GameTest(template = "radiator", timeoutTicks = 650)
+    public static void configureCondensateReturn(GameTestHelper h) {
+        var rig = LiquidPumpTests.place(h);
+        var tile = rig.controller();
+        var pump = (gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump) tile.getMetaTileEntity();
+        var p = h.absolute("controller");
+        var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+        var controls = ClientTest.scenario(h)
+            .awaitServer("pump formed", () -> h.assertTrue(pump.checkStructure(true, tile), "All four hatches installed"))
+            .server("view the pump", () -> {
+                h.getWorld().setBlock(p.x() + 3, p.y() + 1, p.z() - 4, net.minecraft.init.Blocks.stonebrick);
+                player.playerNetServerHandler.setPlayerLocation(p.x() + 3.5, p.y() + 2, p.z() - 3.5, 38, 29);
                 tile.setOwnerUuid(player.getUniqueID());
                 tile.setOwnerName(player.getCommandSenderName());
-            }).awaitClient("liquid pump visible", c -> {
-                var found = Minecraft.getMinecraft().theWorld.getTileEntity(pos.x() + 2, pos.y(), pos.z() + 1);
-                if (!(found instanceof IGregTechTileEntity pump) || pump.getMetaTileID() != 5779)
-                    throw new AssertionError("Waiting for the pump");
-            }).capture("condensate-return-line")
-            .server("open the pump panel", () -> {
-                player.inventory.currentItem = 8;
-                helper.assertTrue(((gregtech.api.metatileentity.BaseMetaTileEntity) tile)
-                    .onRightclick(player, ForgeDirection.EAST, 0.5f, 0.5f, 0.5f), "Pump opens without a tool");
-            })
-            .click(cycle).awaitServer("differential mode", () -> helper.assertEquals("TARGET_PRESSURE_DIFFERENTIAL",
-                saved.get().getString("pumpMode"), "Pressure rise selected"))
-            .click(cycle).awaitServer("flow mode", () -> helper.assertEquals("TARGET_FLOW", saved.get().getString("pumpMode"), "Flow selected"))
-            .click(value).key(Keyboard.KEY_END, '\0');
+            }).awaitClient("controller visible", c -> {
+                if (!(Minecraft.getMinecraft().theWorld.getTileEntity(p.x(), p.y(), p.z()) instanceof IGregTechTileEntity t)
+                    || t.getMetaTileID() != 5779) throw new AssertionError("Waiting for the pump controller");
+            }).capture("liquid-pump-structure")
+            .server("open pump", () -> pump.onRightclick(tile, player))
+            .click(panelControl(null, "pumpSettingsButton"))
+            .click(panelControl("pumpSettings", "pumpTarget")).key(Keyboard.KEY_END, '\0');
         for (int i = 0; i < 5; i++) controls.key(Keyboard.KEY_BACK, '\b');
-        char separator = new com.gtnewhorizons.modularui.api.NumberFormatMUI().format(0.5).charAt(1);
-        controls.key(Keyboard.KEY_0, '0').key(separator == ',' ? Keyboard.KEY_COMMA : Keyboard.KEY_PERIOD, separator).key(Keyboard.KEY_0, '0')
-            .key(Keyboard.KEY_0, '0').key(Keyboard.KEY_7, '7').key(Keyboard.KEY_5, '5').key(Keyboard.KEY_RETURN, '\r')
-            .awaitServer("fractional rate saved", () -> helper.assertEquals(0.0075, saved.get().getDouble("litersPerTick"), "0.0075 L/t"))
-            .capture("pump-flow-settings").server("close the panel", player::closeScreen).succeed();
-    }
-
-    private static ClientTarget legacyWidget(Class<?> type) {
-        return ClientTarget.of(type.getSimpleName(), window -> {
-            if (!(Minecraft.getMinecraft().currentScreen instanceof com.gtnewhorizons.modularui.common.internal.wrapper.ModularGui gui)) return null;
-            for (var widget : gui.getContext().getMainWindow().getChildren()) {
-                if (type.isInstance(widget)) return new ClickTarget(widget, widget.getRenderAbsoluteRectangle(), widget::isHovering);
-            }
-            return null;
-        });
+        controls.key(Keyboard.KEY_2, '2').key(Keyboard.KEY_5, '5').key(Keyboard.KEY_0, '0').key(Keyboard.KEY_RETURN, '\r')
+            .awaitServer("outlet setpoint", () -> h.assertEquals(250, pump.target(), "2.50 bar"))
+            .click(panelControl("pumpSettings", "pumpFloor")).key(Keyboard.KEY_END, '\0').key(Keyboard.KEY_BACK, '\b')
+            .key(Keyboard.KEY_5, '5').key(Keyboard.KEY_0, '0').key(Keyboard.KEY_RETURN, '\r')
+            .awaitServer("inlet protection", () -> h.assertEquals(50, pump.inletFloor(), "0.50 bar"))
+            .click(panelControl("pumpSettings", "pumpInterval")).key(Keyboard.KEY_END, '\0').key(Keyboard.KEY_BACK, '\b')
+            .key(Keyboard.KEY_3, '3').key(Keyboard.KEY_RETURN, '\r')
+            .awaitServer("pressure stroke period", () -> h.assertEquals(3, pump.interval(), "60 ticks at the pressure setpoint"))
+            .capture("pump-pressure-settings")
+            .click(panelControl("pumpSettings", "pumpMode"))
+            .awaitServer("pressure rise", () -> h.assertEquals(1, pump.mode().ordinal(), "Differential control"))
+            .click(panelControl("pumpSettings", "pumpMode"))
+            .awaitServer("delivery mode", () -> h.assertEquals(2, pump.mode().ordinal(), "Volume control"))
+            .click(panelControl("pumpSettings", "pumpIntake"))
+            .awaitServer("gas intake", () -> h.assertTrue(pump.gasIntake(), "Controller selects the vapor port"))
+            .capture("pump-gas-intake")
+            .click(panelControl("pumpSettings", "pumpIntake"))
+            .awaitServer("condensate intake", () -> h.assertTrue(!pump.gasIntake(), "Liquid intake restored"))
+            .server("close the panel", player::closeScreen).succeed();
     }
 
     @GameTest(template = "regulator", timeoutTicks = 600)
@@ -1209,6 +1452,11 @@ public final class InjectorViewTests {
     }
 
     @GameTest(template = "regulator", timeoutTicks = 400)
+    public static void inspectSteamRotorFeed(GameTestHelper helper) {
+        inspectMeteredFluid(helper, "steam", "water", 6, 37500, false, "steam-rotor-feed");
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 400)
     public static void inspectOxygen(GameTestHelper helper) {
         inspectMeteredFluid(helper, "oxygen", "oxygen", 1, 888_888, true, "oxygen-inventory");
     }
@@ -1225,25 +1473,80 @@ public final class InjectorViewTests {
 
     @GameTest(template = "regulator", timeoutTicks = 400)
     public static void inspectSupercriticalPressureLine(GameTestHelper h) {
+        inspectRatedCharge(h, "water", PressureLineTests.MICRO_KG, 220.64, "reinforced-supercritical-line", line -> line.charge(h));
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 400)
+    public static void inspectDenseHydrogen(GameTestHelper h) {
+        // Prepared 30 kg/m3 normal hydrogen isochore with the 40 K reference energy
+        inspectRatedCharge(h, "hydrogen", 9000000L, 25, "reinforced-hydrogen-line", line ->
+            line.first().getNetwork().replaceCanonicalState(IFNCanonicalState.fromRaw("hydrogen", 9000000L, 2841264270000L)));
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 400)
+    public static void inspectDenseOxygen(GameTestHelper h) {
+        // Prepared 300 kg/m3 oxygen isochore, with the same reference energy as the chamber cycle
+        inspectRatedCharge(h, "oxygen", 90000000L, 60, "reinforced-oxygen-line", line ->
+            line.first().getNetwork().replaceCanonicalState(IFNCanonicalState.fromRaw("oxygen", 90000000L, 17116884900000L)));
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 400)
+    public static void inspectDenseNitrogen(GameTestHelper h) {
+        // A prepared 200 kg/m3 isochore from the wet-to-supercritical nitrogen reference test
+        inspectRatedCharge(h, "nitrogen", 60000000L, 40, "reinforced-nitrogen-line", line ->
+            line.first().getNetwork().replaceCanonicalState(IFNCanonicalState.fromRaw("nitrogen", 60000000L, 10739130000000L)));
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 400)
+    public static void inspectDenseHelium(GameTestHelper h) {
+        inspectRatedCharge(h, "helium", 3 * PressureLineTests.HELIUM_MICRO_KG_PER_SECTION, 11.9,
+            "reinforced-helium-line", line -> PressureLineTests.chargeDenseHelium(line.first()));
+    }
+
+    @GameTest(template = "radiator", timeoutTicks = 1500)
+    public static void inspectHeliumLiquefier(GameTestHelper h) {
+        var rig = HeatPumpTests.placeLiquefier(h);
+        var p = h.absolute("controller");
+        ClientTest.scenario(h).awaitServer("heat pump and both manifolds formed", () -> rig.ready(h))
+            .server("view the controller and receiver", () -> {
+                h.getWorld().setBlock(p.x() + 2, p.y() + 3, p.z() - 3, net.minecraft.init.Blocks.stonebrick);
+                var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
+                player.playerNetServerHandler.setPlayerLocation(p.x() + 2.5, p.y() + 4, p.z() - 2.5, 18, 34);
+            }).awaitClient("controller and both pipe banks rendered", c -> {
+                var mc = Minecraft.getMinecraft();
+                if (Math.abs(mc.thePlayer.posX - (p.x() + 2.5)) > 0.1
+                    || !(mc.theWorld.getTileEntity(p.x() - 2, p.y(), p.z() + 1) instanceof gregtech.api.metatileentity.BaseMetaPipeEntity feed)
+                    || (feed.mConnections & ForgeDirection.EAST.flag) == 0
+                    || !(mc.theWorld.getTileEntity(p.x() + 2, p.y(), p.z() + 1) instanceof gregtech.api.metatileentity.BaseMetaPipeEntity receiver)
+                    || (receiver.mConnections & ForgeDirection.WEST.flag) == 0)
+                    throw new AssertionError("Waiting for the connected manifolds");
+            }).server("start paid cooling from warm gas", () -> rig.start(h))
+            .withinTicks(1200).awaitServer("liquid present in the receiver", () -> rig.checkLiquid(h))
+            .capture("helium-liquefier").succeed();
+    }
+
+    private static void inspectRatedCharge(GameTestHelper h, String substance, long mass, double minimumBar, String capture,
+        java.util.function.Consumer<PressureLineTests.Line> charge) {
         var line = PressureLineTests.place(h, false);
         var viewer = h.absolute("viewer");
         var outlet = h.absolute("outlet");
         var middle = h.absolute("valve");
         ClientTest.scenario(h).awaitServer("reinforced line connected", () -> line.ready(h))
             .server("charge and inspect the pressure line", () -> {
-                line.charge(h);
+                charge.accept(line);
                 var player = (EntityPlayerMP) h.getWorld().playerEntities.get(0);
                 player.playerNetServerHandler.setPlayerLocation(viewer.x() + 0.5, viewer.y(), viewer.z() + 0.5, -18.4f, 19);
             }).awaitClient("read the rated line", c -> {
-                requirePipeMass(outlet.x(), outlet.y(), outlet.z(), PressureLineTests.MICRO_KG);
+                requirePipeMass(outlet.x(), outlet.y(), outlet.z(), mass);
                 var joined = Minecraft.getMinecraft().theWorld.getTileEntity(middle.x(), middle.y(), middle.z());
                 int ends = ForgeDirection.WEST.flag | ForgeDirection.EAST.flag;
                 if (!(joined instanceof gregtech.api.metatileentity.BaseMetaPipeEntity pipe) || (pipe.mConnections & ends) != ends)
                     throw new AssertionError("Waiting for the connected pipe geometry");
                 var tag = mcp.mobius.waila.api.impl.DataAccessorCommon.instance.getNBTData();
-                if (!"SUPERCRITICAL".equals(tag.getString("phase")) || tag.getFloat("maxPressureBar") != 350
-                    || tag.getFloat("pressure") < 220.64) throw new AssertionError("Waiting for the supercritical water and installed rating");
-            }).capture("reinforced-supercritical-line").succeed();
+                if (!substance.equals(tag.getString("substanceId")) || !"SUPERCRITICAL".equals(tag.getString("phase"))
+                    || tag.getFloat("maxPressureBar") != 350 || tag.getFloat("pressure") < minimumBar)
+                    throw new AssertionError("Waiting for supercritical " + substance + " and installed rating");
+            }).capture(capture).succeed();
     }
 
     private static void inspectMeteredFluid(GameTestHelper helper, String forgeName, String substance, int units,
@@ -1287,12 +1590,15 @@ public final class InjectorViewTests {
                     || !chat.reading.contains(capacity + " L")) throw new AssertionError(chat.reading);
                 if (forgeName.equals("supercoolant") && !(Math.abs(tag.getFloat("temperature") - 300) < 1))
                     throw new AssertionError("Expected local coolant temperature: " + tag.getFloat("temperature"));
+                if (forgeName.equals("steam") && tag.getInteger("bulkPortionStrokeL") != (capacity + units - 1) / units)
+                    throw new AssertionError("Waiting for the steam intake size in whole liters");
             }).capture(capture).succeed();
     }
 
     @GameTest(template = "regulator", timeoutTicks = 400)
     public static void regulatedOutlet(GameTestHelper helper) {
         var bench = InjectorTests.placeRegulator(helper);
+        var serverPressure = new java.util.concurrent.atomic.AtomicReference<Float>();
         var viewer = helper.absolute("viewer");
         var target = helper.absolute("outlet");
         ClientTest.scenario(helper)
@@ -1302,14 +1608,17 @@ public final class InjectorViewTests {
             })
             .awaitServer("two separate chambers", () -> bench.requireNetworks(helper))
             .server("charge steam inlet and feedwater outlet", () -> bench.charge(helper))
-            .awaitServer("valve reaches setpoint", () -> bench.requireMeteredPressure(helper))
+            .awaitServer("whole steam portions reach the outlet", () -> {
+                bench.requireSteamDelivery(helper);
+                serverPressure.set(bench.outlet().getNetwork().getPressure());
+            })
             .awaitClient("aim at the outlet pipe", c -> {
                 var hit = Minecraft.getMinecraft().objectMouseOver;
                 if (hit == null || hit.blockX != target.x() || hit.blockY != target.y() || hit.blockZ != target.z()) {
                     throw new AssertionError("Outlet pipe must be under the crosshair");
                 }
                 float pressure = mcp.mobius.waila.api.impl.DataAccessorCommon.instance.getNBTData().getFloat("pressure");
-                if (!(pressure >= 0.079f && pressure <= 0.08f)) {
+                if (!(Math.abs(pressure - serverPressure.get()) <= 0.001f && pressure <= 0.08f)) {
                     throw new AssertionError("Waiting for the regulated pressure in WAILA: " + pressure);
                 }
             })

@@ -19,6 +19,7 @@ import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegrated
 import gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState;
 import gregtech.common.tileentities.machines.multi.MTERadiator;
 import gregtech.common.tileentities.machines.multi.radiator.RadiatorLoopAnalyzer;
+import gregtech.common.tileentities.machines.multi.radiator.RadiatorModuleRegistry;
 
 @GameTestHolder(value = Mods.ModIDs.GREG_TECH, templatePrefix = "vfn")
 public class RadiatorTests {
@@ -52,7 +53,57 @@ public class RadiatorTests {
         return placeAt(helper.getWorld(), p.x(), p.y(), p.z());
     }
 
-    private static Rig placeAt(World world, int x, int y, int z) {
+    record MatchedRadiators(Rig bare, Rig finned) {
+        void start(GameTestHelper h) {
+            for (var rig : new Rig[] { bare, finned }) {
+                rig.charge(h);
+                rig.machine().setMachineMode(0);
+                rig.machine().setConstantOperationTicks(20);
+                rig.outlet().getNetwork().replaceCanonicalState(IFNCanonicalState.fromRaw("water", 10_000_000, 22_037_935_000_000L));
+            }
+            h.assertEquals(0, bare.machine().getLoopHeatExchangeModuleCount(), "Bare pipe has no fin");
+            h.assertEquals(1, finned.machine().getLoopConductionModuleCount(), "Copper conduction module attached to the pipe");
+            h.assertEquals(1, finned.machine().getLoopHeatExchangeModuleCount(), "Copper exchanger attached to the conductor");
+            h.assertEquals(bare.machine().getLoopPressureDropBar(), finned.machine().getLoopPressureDropBar(), "Same two pipe segments");
+        }
+
+        void checkFinished(GameTestHelper h) {
+            var a = bare.inventory();
+            var b = finned.inventory();
+            h.assertTrue(a.getBoolean("loopOutputReady") && b.getBoolean("loopOutputReady"), "Both timed charges finished");
+            h.assertTrue(bare.heldMass() > 0, "Physical charge retained by backpressure");
+            h.assertEquals(bare.heldMass(), finned.heldMass(), "Compare equal masses");
+            h.assertEquals(bare.inlet().getNetwork().getCanonicalState().totalEnergy().rawUnits(),
+                finned.inlet().getNetwork().getCanonicalState().totalEnergy().rawUnits(), "Equal energy was taken from both inlet charges");
+            long extraHeat = a.getLong("loopMicroEu") - b.getLong("loopMicroEu");
+            h.assertTrue(extraHeat > 0, "The physical fin discharged more heat during the same 20 ticks");
+            h.recordDiagnostic("Equal charges: " + bare.heldMass() + " microkg, extra heat from the fin: " + extraHeat + " microEU");
+        }
+    }
+
+    static MatchedRadiators placeMatched(GameTestHelper h) {
+        var p = h.absolute("controller");
+        var w = h.getWorld();
+        var bare = placeAt(w, p.x() - 2, p.y(), p.z());
+        var finned = placeAt(w, p.x() + 2, p.y(), p.z());
+        for (var type : RadiatorModuleRegistry.ModuleType.values()) {
+            var stack = RadiatorModuleRegistry.getItemStack(type, gregtech.api.enums.Materials.Copper, 1);
+            h.assertNotNull(stack, "Registered copper module " + type);
+            int offset = type == RadiatorModuleRegistry.ModuleType.CONDUCTION ? 1 : 2;
+            w.setBlock(p.x() + 2 + offset, p.y() + 2, p.z() + 1,
+                net.minecraft.block.Block.getBlockFromItem(stack.getItem()), stack.getItemDamage(), 3);
+        }
+        return new MatchedRadiators(bare, finned);
+    }
+
+    @GameTest(template = "water_line", timeoutTicks = 450)
+    public static void copperFinCoolsTheSameChargeFaster(GameTestHelper h) {
+        var machines = placeMatched(h);
+        h.startSequence().thenIdle(25).thenExecute(() -> machines.start(h))
+            .thenWaitUntil(() -> machines.checkFinished(h)).thenSucceed();
+    }
+
+    static Rig placeAt(World world, int x, int y, int z) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = 0; dz <= 2; dz++) {
@@ -126,6 +177,18 @@ public class RadiatorTests {
         var w = helper.getWorld();
         var p = helper.absolute("controller");
         int x = p.x(), y = p.y(), z = p.z();
+        var extractor = InjectorTests.placeAt(w, x, y, z + 4, (short) 32032, ForgeDirection.NORTH);
+        var tank = InjectorTests.placeAt(w, x, y, z + 5, (short) 130, ForgeDirection.WEST);
+        InjectorTests.placeAt(w, x, y, z + 6, (short) 5773, ForgeDirection.SOUTH);
+        var receiver = (MTEIntegratedFluidPipe)
+            InjectorTests.placeAt(w, x, y, z + 7, (short) 5770, ForgeDirection.NORTH).getMetaTileEntity();
+        receiver.connect(ForgeDirection.NORTH);
+        connectSharedLoop(w, x, y, z);
+        var ambient = new AmbientTests.AmbientMeter(helper, rig.inlet()::getNetwork);
+        return new WaterReturn(rig, extractor, tank, receiver, ambient, new AmbientTests.AmbientMeter(helper, receiver::getNetwork));
+    }
+
+    static void connectSharedLoop(World w, int x, int y, int z) {
         var pipes = new ArrayList<MTEIntegratedFluidPipe>();
         for (int dx = -2; dx <= 2; dx++) {
             for (int dz = 1; dz <= 3; dz++) {
@@ -134,17 +197,9 @@ public class RadiatorTests {
                     InjectorTests.placeAt(w, x + dx, y, z + dz, (short) 5770, ForgeDirection.NORTH).getMetaTileEntity());
             }
         }
-        var extractor = InjectorTests.placeAt(w, x, y, z + 4, (short) 32032, ForgeDirection.NORTH);
-        var tank = InjectorTests.placeAt(w, x, y, z + 5, (short) 130, ForgeDirection.WEST);
-        InjectorTests.placeAt(w, x, y, z + 6, (short) 5773, ForgeDirection.SOUTH);
-        var receiver = (MTEIntegratedFluidPipe)
-            InjectorTests.placeAt(w, x, y, z + 7, (short) 5770, ForgeDirection.NORTH).getMetaTileEntity();
-        receiver.connect(ForgeDirection.NORTH);
         for (var pipe : pipes) {
             for (var side : ForgeDirection.VALID_DIRECTIONS) pipe.connect(side);
         }
-        var ambient = new AmbientTests.AmbientMeter(helper, rig.inlet()::getNetwork);
-        return new WaterReturn(rig, extractor, tank, receiver, ambient, new AmbientTests.AmbientMeter(helper, receiver::getNetwork));
     }
 
     record HeatedLine(HeatPumpTests.Rig heater, Rig radiator, MTEIntegratedFluidPipe bridge) {
@@ -198,7 +253,7 @@ public class RadiatorTests {
 
     @GameTest(template = "water_line", timeoutTicks = 1200)
     public static void smallCooledChargeCannotOvercomeLoopLoss(GameTestHelper helper) {
-        runIsolatedLoop(helper, 100, 400, false);
+        runIsolatedLoop(helper, 200, 400, false);
     }
 
     private static void runIsolatedLoop(GameTestHelper helper, int packetLiters, int targetK, boolean delivers) {
@@ -335,11 +390,8 @@ public class RadiatorTests {
             })
             .thenIdle(100).thenExecute(() -> {
                 site.reloadForObservation(helper);
-                var machine = (MTERadiator) site.tile(0, 0, 0).getMetaTileEntity();
-                var inlet = (MTEIntegratedFluidInputHatch) site.tile(-1, 0, 1).getMetaTileEntity();
-                var outlet = (MTEIntegratedFluidOutputHatch) site.tile(1, 0, 1).getMetaTileEntity();
-                helper.assertTrue(machine != original.machine(), "A new radiator read the saved chunk");
-                reloaded[0] = new Rig(machine, inlet, outlet);
+                reloaded[0] = readRig(site);
+                helper.assertTrue(reloaded[0].machine() != original.machine(), "A new radiator read the saved chunk");
                 var restored = reloaded[0].inventory();
                 helper.assertEquals(unloaded[0].getLong("loopMicroKg"), restored.getLong("loopMicroKg"), "Held mass survives unload");
                 helper.assertEquals(unloaded[0].getLong("loopMicroEu"), restored.getLong("loopMicroEu"), "Held energy survives unload");
@@ -376,5 +428,11 @@ public class RadiatorTests {
                     + rig.heldMass(), "Input, radiator and output conserve mass exactly");
                 helper.assertTrue(rig.machine().getOutputTemperature() < rig.inlet().getNetwork().getTemperature(), "Loop cooled below feed temperature");
             }).thenSucceed();
+    }
+
+    static Rig readRig(RemoteMachineSite site) {
+        return new Rig((MTERadiator) site.tile(0, 0, 0).getMetaTileEntity(),
+            (MTEIntegratedFluidInputHatch) site.tile(-1, 0, 1).getMetaTileEntity(),
+            (MTEIntegratedFluidOutputHatch) site.tile(1, 0, 1).getMetaTileEntity());
     }
 }

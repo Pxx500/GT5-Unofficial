@@ -3,6 +3,7 @@ package gregtech.common.covers;
 import net.minecraft.nbt.NBTBase;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.Fluid;
 
 import org.jetbrains.annotations.NotNull;
 
@@ -37,6 +38,16 @@ public abstract class CoverIFNDetectorBase extends Cover {
         this.minValue = minValue;
         this.maxValue = maxValue;
         return this;
+    }
+
+    @Override
+    public boolean letsFluidIn(Fluid fluid) {
+        return true;
+    }
+
+    @Override
+    public boolean letsFluidOut(Fluid fluid) {
+        return true;
     }
 
     public double getMinValue() {

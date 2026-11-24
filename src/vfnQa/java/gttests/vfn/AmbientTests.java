@@ -73,6 +73,66 @@ public class AmbientTests {
     }
 
     @GameTest(template = "regulator", timeoutTicks = 1400)
+    public static void ordinaryPipeRupturesWithDenseHelium(GameTestHelper helper) {
+        var line = place(helper);
+        var pos = helper.absolute("outlet");
+        helper.startSequence().thenWaitUntil(() -> line.ready(helper)).thenExecute(() -> {
+            var network = line.pipe().getNetwork();
+            PressureLineTests.chargeDenseHelium(line.pipe());
+            helper.assertTrue(network.getSolvedState().isPresent() && Math.abs(network.getPressure() - 12) < 0.01,
+                "Real 12 bar charge rather than an unsolved inventory");
+            helper.assertTrue(network.getSolvedState().get().denseRegion()
+                == gregtech.api.metatileentity.implementations.integratedfluid.thermodynamics.PureFluid.DenseRegion.SUPERCRITICAL,
+                "Compressed hot helium has no separate steam fraction");
+        }).thenWaitUntil(() -> helper.assertTrue(helper.getWorld().isAirBlock(pos.x(), pos.y(), pos.z()),
+            "Ordinary pipe actually ruptured")).thenSucceed();
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 180)
+    public static void coolingClearsPipePressureWarning(GameTestHelper h) {
+        var pipe = (MTEIntegratedFluidPipe) InjectorTests.placeHatch(h, "source", (short) 5770, ForgeDirection.WEST)
+            .getMetaTileEntity();
+        var meter = new AmbientMeter(h, pipe::getNetwork);
+        long mass = 457100L, heat = mass * 2242506L;
+        h.startSequence().thenIdle(20).thenExecute(() -> {
+            var circuit = pipe.getNetwork();
+            circuit.replaceCanonicalState(gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState
+                .fromRaw("water", mass, heat));
+            h.assertTrue(circuit.getPressure() > 10 && circuit.getPressure() < 10.05, "Just over the pipe rating");
+        }).thenWaitUntil(() -> h.assertTrue(pipe.getNetwork().getPressureWarningTicks() > 0, "Server raised the warning"))
+            .thenWaitUntil(() -> {
+                var circuit = pipe.getNetwork();
+                h.assertTrue(circuit.getPressure() < 10 && circuit.getPressureWarningTicks() == 0, "Cooling cleared the warning");
+                h.assertEquals(mass, circuit.getAmountQ(), "Pressure fell without venting steam");
+                h.assertTrue(meter.heatMicroEu() < 0, "Heat left through the pipe");
+                h.assertEquals(heat, meter.withoutAmbient(circuit), "Only ambient cooling relieved the pressure");
+                h.recordDiagnostic("Recovered at " + circuit.getPressure() + " bar and " + circuit.getTemperature()
+                    + " K with " + mass + " microkg");
+            }).thenSucceed();
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 1400)
+    public static void sealedHeliumWarmsAcrossTwoBar(GameTestHelper helper) {
+        var line = place(helper);
+        var meter = new AmbientMeter(helper, line.pipe()::getNetwork);
+        // One GT portion of cold helium in the 100 L pipe, with no heater or external fluid transfer
+        long mass = 111_111L, energy = 27_620_000_000L;
+        helper.startSequence().thenWaitUntil(() -> line.ready(helper)).thenExecute(() -> {
+            var network = line.pipe().getNetwork();
+            network.replaceCanonicalState(gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState
+                .fromRaw("helium", mass, energy));
+            helper.assertTrue(network.getPressure() > 1.8 && network.getPressure() < 2, "Sealed charge starts below two bar");
+        }).thenWaitUntil(() -> {
+            var network = line.pipe().getNetwork();
+            helper.assertTrue(network.getPressure() > 2.4, "Ambient heat raises the charge past two bar");
+            helper.assertEquals(mass, network.getAmountQ(), "All helium retained");
+            helper.assertEquals(energy, meter.withoutAmbient(network), "Only heat from the world increased internal energy");
+            helper.recordDiagnostic("Sealed helium: " + network.getPressure() + " bar, " + network.getTemperature()
+                + " K, ambient supplied " + meter.heatMicroEu() + " microEU");
+        }).thenSucceed();
+    }
+
+    @GameTest(template = "regulator", timeoutTicks = 1400)
     public static void warmAmbientThawsStationaryCharge(GameTestHelper helper) {
         var line = place(helper);
         var meter = new AmbientMeter(helper, line.pipe()::getNetwork);

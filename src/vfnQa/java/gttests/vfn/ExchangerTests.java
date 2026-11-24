@@ -20,7 +20,8 @@ public class ExchangerTests {
     record Bench(MTEIntegratedFluidInjectorHatch hot, MTEIntegratedFluidInjectorHatch cold, MTEIntegratedFluidPipe source, MTEIntegratedFluidPipe outlet) {
         void ready(GameTestHelper helper) {
             helper.assertTrue(hot.getNetwork() != null && cold.getNetwork() != null && hot.getNetwork() != cold.getNetwork()
-                && hot.getNetwork().getMemberCount() == 2 && cold.getNetwork().getMemberCount() == 2, "Independent pipe inventories");
+                && ((source.getNetwork() == hot.getNetwork() && outlet.getNetwork() == cold.getNetwork())
+                    || (source.getNetwork() == cold.getNetwork() && outlet.getNetwork() == hot.getNetwork())), "Independent pipe inventories");
         }
 
         void charge(GameTestHelper helper) {

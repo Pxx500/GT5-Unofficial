@@ -15,6 +15,23 @@ import gregtech.api.metatileentity.implementations.integratedfluid.amount.Substa
 class IFNWailaFormatterTest {
 
     @Test
+    void readableBulkStrokeRoundsUpAndRequiresAWholePortionInThePipe() {
+        var network = IFNTestSupport.newNetwork(IFNTestSupport.waterFluid(), 100, 0, 20);
+        for (long mass : new long[] { 37_500, 6_249 }) {
+            network.replaceCanonicalState(gregtech.api.metatileentity.implementations.integratedfluid.state.IFNCanonicalState
+                .fromRaw("water", mass, mass * 2_260_000L));
+            var tag = new NBTTagCompound();
+            IFNWailaFormatter.writeNetworkStatus(network, tag);
+            if (mass < 6_250) assertFalse(tag.hasKey("bulkPortionStrokeL"));
+            else {
+                org.junit.jupiter.api.Assertions.assertEquals(17, tag.getInteger("bulkPortionStrokeL"));
+                assertTrue(network.intakeStrokeTooSmall(16, 1));
+                assertFalse(network.intakeStrokeTooSmall(17, 1));
+            }
+        }
+    }
+
+    @Test
     void frozenStatusIncludesReason() {
         NBTTagCompound tag = new NBTTagCompound();
         List<String> tooltip = new ArrayList<>();

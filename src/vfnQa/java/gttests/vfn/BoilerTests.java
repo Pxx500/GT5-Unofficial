@@ -14,6 +14,30 @@ import gregtech.api.enums.Mods;
 @GameTestHolder(value = Mods.ModIDs.GREG_TECH, templatePrefix = "vfn")
 public class BoilerTests {
 
+    @GameTest(template = "regulator", timeoutTicks = 350)
+    public static void temperatureDetectorKeepsThermalPortConnected(GameTestHelper h) {
+        var line = AmbientTests.place(h);
+        var heater = InjectorTests.placeHatch(h, "valve", (short)5776, ForgeDirection.WEST);
+        h.assertTrue(line.pipe().connect(ForgeDirection.WEST) > 0, "Thermal contact installed");
+        var detector = DensePlantTests.GovernedPlant.control(h, heater, ForgeDirection.EAST,
+            gregtech.api.enums.ItemList.Cover_IFNTemperatureDetector, 280);
+        var meter = new AmbientTests.AmbientMeter(h, line.pipe()::getNetwork);
+        long[] before = new long[1];
+        h.startSequence().thenWaitUntil(() -> line.ready(h)).thenExecute(() -> {
+            h.assertEquals(1, line.inlet().fill(new FluidStack(FluidRegistry.WATER, 1), true), "Ambient water");
+            before[0] = meter.withoutAmbient(line.pipe().getNetwork());
+        }).thenWaitUntil(() -> h.assertTrue(!heater.isAllowedToWork(), "Thermostat off"))
+            .thenWaitUntil(() -> h.assertEquals(1L, heater.injectEnergyUnits(ForgeDirection.WEST, 128, 1), "Buffered MV packet"))
+            .thenIdle(40).thenExecute(() -> {
+                h.assertEquals(128L, heater.getStoredEU(), "No heating above target");
+                detector.setMaxValue(350);
+            }).thenWaitUntil(() -> h.assertTrue(heater.isAllowedToWork(), "Thermostat on"))
+            .thenWaitUntil(() -> h.assertEquals(0L, heater.getStoredEU(), "Paid heating through detector face, connected="
+                + line.pipe().isConnectedAtSide(ForgeDirection.WEST)))
+            .thenExecute(() -> h.assertEquals(before[0] + 128_000_000L, meter.withoutAmbient(line.pipe().getNetwork()),
+                "Thermostat released one paid packet into the water")).thenSucceed();
+    }
+
     @GameTest(template = "regulator", timeoutTicks = 200)
     public static void smallSteamChargeAcceptsPartialPower(GameTestHelper helper) {
         var line = AmbientTests.place(helper);

@@ -5,6 +5,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.util.HashSet;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
@@ -13,6 +14,7 @@ import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidRegistry;
 import net.minecraftforge.fluids.FluidStack;
 
+import gregtech.api.interfaces.tileentity.IBasicEnergyContainer;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.metatileentity.implementations.integratedfluid.amount.VolumeAmount;
 import gregtech.api.metatileentity.implementations.integratedfluid.safety.IFNFailureCandidateSelector;
@@ -551,11 +553,24 @@ public class IntegratedFluidNetwork {
         return settleMachinePort(machine, move, true);
     }
 
-    /** Accepts only the portion a machine can discharge against this network and the loop pressure loss. */
-    public ClosedFluidChamber drainMachineChamber(ClosedFluidChamber machine, int packetLiters, double pressureDropPa) {
-        if (!IFNNetworkTransferGate.canReceiveFromMachine(this) || chamber == null) return machine;
+    public boolean intakeStrokeTooSmall(double liters, double primaryShare) {
+        return IFNNetworkTransferGate.canProvideToMachine(this) && chamber != null && chamber.intakeStrokeTooSmall(liters, primaryShare);
+    }
+
+    OptionalInt minimumBulkStrokeLiters() {
+        return chamber != null && IFNNetworkTransferGate.canProvideToMachine(this)
+            ? chamber.minimumBulkStrokeLiters() : OptionalInt.empty();
+    }
+
+    public record MachineDischarge(ClosedFluidChamber remaining, boolean finished) {}
+
+    /** Completing an outlet stroke may leave the entire sub-portion charge in the machine. */
+    public MachineDischarge drainMachineChamber(ClosedFluidChamber machine, int packetLiters, double pressureDropPa) {
+        if (!IFNNetworkTransferGate.canReceiveFromMachine(this) || chamber == null || packetLiters <= 0)
+            return new MachineDischarge(machine, false);
         var move = machine.meteredTransferWithLossTo(chamber, BigDecimal.valueOf(packetLiters), pressureDropPa);
-        return settleMachinePort(machine, move, false);
+        var remaining = settleMachinePort(machine, move, false);
+        return new MachineDischarge(remaining, remaining != machine || machine.isUndrainableHeelAt(chamber, pressureDropPa));
     }
 
     public ClosedFluidChamber.SplitCharge fillSplitChambers(ClosedFluidChamber primary, ClosedFluidChamber partner,
@@ -647,27 +662,40 @@ public class IntegratedFluidNetwork {
         return accepted;
     }
 
-    long pumpLiquidTo(IntegratedFluidNetwork outlet, IGregTechTileEntity supply, BigDecimal strokeLiters,
-        double outletPa, double availableRisePa, long maximumEu) {
+    long pumpTo(IntegratedFluidNetwork outlet, IGregTechTileEntity supply, BigDecimal strokeLiters,
+        double outletPa, double availableRisePa, long maximumEu, double minimumInletPa, boolean gasIntake) {
         if (!canTransferTo(outlet)) return 0;
-        var moved = chamber.pumpLiquidTo(outlet.chamber, strokeLiters, outletPa, availableRisePa,
-            Math.min(maximumEu, supply.getStoredEU()));
+        var moved = chamber.pumpTo(outlet.chamber, strokeLiters, outletPa, availableRisePa,
+            Math.min(maximumEu, supply.getStoredEU()), minimumInletPa, gasIntake);
         long cost = -moved.shaftWorkEu();
         return cost > 0 && commitPair(outlet, moved.source(), moved.receiver(),
             () -> supply.decreaseStoredEnergyUnits(cost, false)) ? cost : 0;
     }
 
     ClosedFluidChamber.FluidTransfer expandTo(IntegratedFluidNetwork outlet, BigDecimal maximumLiters, ClosedFluidChamber.ExpansionStage stage,
-        long workBudgetEu) {
-        if (!canTransferTo(outlet) || chamber.substance() != PureFluid.water() || workBudgetEu <= 0) return null;
-        var move = chamber.expandTo(outlet.chamber, maximumLiters, stage, workBudgetEu);
-        return move.shaftWorkEu() > 0 && commitPair(outlet, move.source(), move.receiver()) ? move : null;
+        IBasicEnergyContainer dynamo, long maximumWorkEu) {
+        if (!canTransferTo(outlet) || !hasExpandableWater()) return null;
+        long budget = Math.min(maximumWorkEu, dynamo.getEUCapacity() - dynamo.getStoredEU());
+        if (budget <= 0) return null;
+        var move = chamber.expandTo(outlet.chamber, maximumLiters, stage, budget);
+        long work = move.shaftWorkEu();
+        return work > 0 && commitPair(outlet, move.source(), move.receiver(), () -> dynamo.increaseStoredEnergyUnits(work, false))
+            ? move : null;
     }
 
-    void bypassSteamTo(IntegratedFluidNetwork outlet, BigDecimal liters) {
-        if (canTransferTo(outlet) && chamber.substance() == PureFluid.water() && !chamber.isEmpty()
+    boolean containsWater() {
+        return hasSolvedFluid() && chamber.substance() == PureFluid.water();
+    }
+
+    boolean hasExpandableWater() {
+        return containsWater() && chamber.state().canExpand();
+    }
+
+    long bypassSteamTo(IntegratedFluidNetwork outlet, BigDecimal liters) {
+        if (canTransferTo(outlet) && containsWater()
             && (chamber.state().vaporMassFraction() > 0 || chamber.state().denseRegion() != PureFluid.DenseRegion.NONE))
-            commitMovedMass(outlet, chamber.meteredTransferTo(outlet.chamber, liters, Double.MAX_VALUE));
+            return commitMovedMass(outlet, chamber.meteredTransferTo(outlet.chamber, liters, Double.MAX_VALUE));
+        return 0;
     }
 
     long conductHeatTo(IntegratedFluidNetwork other, double conductanceBudgetEuPerKelvin) {
@@ -684,7 +712,7 @@ public class IntegratedFluidNetwork {
     }
 
     private boolean commitPair(IntegratedFluidNetwork outlet, ClosedFluidChamber sourceChamber, ClosedFluidChamber outletChamber,
-        java.util.function.BooleanSupplier pay) {
+        java.util.function.BooleanSupplier settleWork) {
         IFNCanonicalState sourceAfter;
         IFNCanonicalState outletAfter;
         try {
@@ -694,7 +722,7 @@ public class IntegratedFluidNetwork {
             return false;
         }
         // Both ledgers must be representable before either network changes
-        if (!pay.getAsBoolean()) return false;
+        if (!settleWork.getAsBoolean()) return false;
         installChamber(sourceChamber, sourceAfter);
         outlet.installChamber(outletChamber, outletAfter);
         persistState();

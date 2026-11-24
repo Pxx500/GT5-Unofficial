@@ -46,7 +46,9 @@ import gregtech.api.enums.ItemList;
 import gregtech.api.enums.Materials;
 import gregtech.api.enums.OrePrefixes;
 import gregtech.api.enums.TierEU;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidInputHatch;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidLiquidPump;
+import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidOutputHatch;
 import gregtech.api.metatileentity.implementations.integratedfluid.MTEIntegratedFluidPipe;
 import gregtech.api.objects.OreDictItemStack;
 import gregtech.api.objects.SubstituteFluidStack;
@@ -59,6 +61,15 @@ import tectech.thing.CustomItemList;
 
 @SuppressWarnings({ "PointlessArithmeticExpression" })
 public class AssemblerRecipes implements Runnable {
+
+    private static void reinforcedPort(ItemList hatch, short id) {
+        GTValues.RA.stdBuilder()
+            .itemInputs(hatch.get(1), new ItemStack(GregTechAPI.sBlockMachines, 1, MTEIntegratedFluidPipe.REINFORCED_ID))
+            .itemOutputs(new ItemStack(GregTechAPI.sBlockMachines, 1, id))
+            .duration(10 * SECONDS)
+            .eut(TierEU.RECIPE_EV)
+            .addTo(assemblerRecipes);
+    }
 
     @Override
     public void run() {
@@ -79,6 +90,8 @@ public class AssemblerRecipes implements Runnable {
             .eut(TierEU.RECIPE_EV)
             .addTo(assemblerRecipes);
 
+        reinforcedPort(ItemList.Hatch_Input_EV, MTEIntegratedFluidInputHatch.REINFORCED_ID);
+        reinforcedPort(ItemList.Hatch_Output_EV, MTEIntegratedFluidOutputHatch.REINFORCED_ID);
         this.withBartWorks();
         this.withGalacticraftMars();
         this.withRailcraft();
